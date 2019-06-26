@@ -42,6 +42,7 @@
 #define BNO055_REG_TEMP					0x34
 #define BNO055_REG_CAL_STATUS			0x35	// 2016Nov07:NEB
 
+#define BNO055_REG_SYS_STATUS			0x39
 #define BNO055_REG_SYS_ERR				0x3A
 #define BNO055_REG_UNIT_SEL				0x3B
 
@@ -295,6 +296,8 @@ static ssize_t show_calibration_status( struct device* dev, struct device_attrib
 static ssize_t read_calibration_profile( struct device* dev, struct device_attribute* attr, char* buf );
 static ssize_t write_calibration_profile( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
 static ssize_t read_axis_map( struct device* dev, struct device_attribute* attr, char* buf );
+static ssize_t show_system_error( struct device* dev, struct device_attribute* attr, char* buf );
+static ssize_t show_system_status( struct device* dev, struct device_attribute* attr, char* buf );
 
 static int bno055_read_simple_chan( struct iio_dev *indio_dev, struct iio_chan_spec const *chan, int *val, int *val2, long mask )
 {
@@ -883,12 +886,12 @@ static void bno055_init_simple_channels( struct iio_chan_spec *p, enum iio_chan_
 		p[ i ] = ( struct iio_chan_spec )
 		{
 			.type = type,
-				.info_mask_separate = mask,
-				.info_mask_shared_by_type = BIT( IIO_CHAN_INFO_SCALE ),
-				.modified = 1,
-				.channel2 = IIO_MOD_X + i,
-				/* Each value is stored in two registers. */
-				.address = address + 2 * i,
+			.info_mask_separate = mask,
+			.info_mask_shared_by_type = BIT( IIO_CHAN_INFO_SCALE ),
+			.modified = 1,
+			.channel2 = IIO_MOD_X + i,
+			/* Each value is stored in two registers. */
+			.address = address + 2 * i,
 		};
 	}
 }
@@ -999,7 +1002,47 @@ static ssize_t show_calibration_status( struct device* dev, struct device_attrib
 		raw_val.gyroscope,
 		raw_val.accelerometer,
 		raw_val.magnetometer );
+	return ( ssize_t ) ret;
+}
+
+static ssize_t show_system_error( struct device* dev, struct device_attribute* attr, char* buf )
+{
+	union
+	{
+		unsigned int data;
+		u8 error;
+	} raw_val;
+
+	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
+	struct bno055_data *data = iio_priv( indio_dev );
+
+	int ret = regmap_read( data->regmap, BNO055_REG_SYS_ERR, &raw_val.data );
+	if ( ret < 0 )
+	{
 		return ( ssize_t ) ret;
+	}
+	ret = scnprintf( buf, PAGE_SIZE, "%d\n", raw_val.error );
+	return ( ssize_t ) ret;
+}
+
+static ssize_t show_system_status( struct device* dev, struct device_attribute* attr, char* buf )
+{
+	union
+	{
+		unsigned int data;
+		u8 status;
+	} raw_val;
+
+	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
+	struct bno055_data *data = iio_priv( indio_dev );
+
+	int ret = regmap_read( data->regmap, BNO055_REG_SYS_STATUS, &raw_val.data );
+	if ( ret < 0 )
+	{
+		return ( ssize_t ) ret;
+	}
+	ret = scnprintf( buf, PAGE_SIZE, "%d\n", raw_val.status );
+	return ( ssize_t ) ret;
 }
 
 static ssize_t read_calibration_profile( struct device* dev, struct device_attribute* attr, char* buf )
@@ -1007,9 +1050,21 @@ static ssize_t read_calibration_profile( struct device* dev, struct device_attri
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct bno055_calibration_profile raw_val;
-	int ret = regmap_bulk_read( data->regmap, BNO055_REG_ACC_OFFSET_X_LSB, &raw_val, sizeof( raw_val ) );
+	int ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, BNO055_MODE_CONFIG );
 	if ( ret < 0 )
 	{
+		dev_err( dev, "failed to select configuration mode\n" );
+		return ret;
+	}
+	ret = regmap_bulk_read( data->regmap, BNO055_REG_ACC_OFFSET_X_LSB, &raw_val, sizeof( raw_val ) );
+	if ( ret < 0 )
+	{
+		return ret;
+	}
+	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, data->op_mode );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set operating mode\n" );
 		return ret;
 	}
 	ret = scnprintf( buf, PAGE_SIZE, CAL_PROFILE_FORMAT "\n",
@@ -1142,6 +1197,8 @@ static const struct iio_info bno055_info =
 static DEVICE_ATTR( cal_status, 0444, show_calibration_status, NULL );
 static DEVICE_ATTR( cal_profile, 0644, read_calibration_profile, write_calibration_profile );
 static DEVICE_ATTR( axis_map, 0644, read_axis_map, write_axis_map );
+static DEVICE_ATTR( system_error, 0444, show_system_error, NULL );
+static DEVICE_ATTR( system_status, 0444, show_system_status, NULL );
 
 static int bno055_probe( struct i2c_client *client, const struct i2c_device_id *id )
 {
@@ -1184,23 +1241,48 @@ static int bno055_probe( struct i2c_client *client, const struct i2c_device_id *
 		return ret;
 	}
 
+	/*
+	calibration status
+	*/
 	ret = device_create_file( &indio_dev->dev, &dev_attr_cal_status );
 	if ( ret ){
 		dev_err( &client->dev, "failed to create cal_status sysfs entry.\n" );
 		devm_iio_device_unregister( &client->dev, indio_dev );
 		return ret;
 	}
-
+	/*
+	calibration profile
+	*/
 	ret = device_create_file( &indio_dev->dev, &dev_attr_cal_profile );
 	if ( ret ){
 		dev_err( &client->dev, "failed to create cal_profile sysfs entry.\n" );
 		devm_iio_device_unregister( &client->dev, indio_dev );
 		return ret;
 	}
-
+	/*
+	axis map
+	*/
 	ret = device_create_file( &indio_dev->dev, &dev_attr_axis_map );
 	if ( ret ){
 		dev_err( &client->dev, "failed to create axis_map sysfs entry.\n" );
+		devm_iio_device_unregister( &client->dev, indio_dev );
+		return ret;
+	}
+	/*
+	system error
+	*/
+	ret = device_create_file( &indio_dev->dev, &dev_attr_system_error );
+	if ( ret ){
+		dev_err( &client->dev, "failed to create system_error sysfs entry.\n" );
+		devm_iio_device_unregister( &client->dev, indio_dev );
+		return ret;
+	}
+	/*
+	system status
+	*/
+	ret = device_create_file( &indio_dev->dev, &dev_attr_system_status );
+	if ( ret ){
+		dev_err( &client->dev, "failed to create system_status sysfs entry.\n" );
 		devm_iio_device_unregister( &client->dev, indio_dev );
 		return ret;
 	}
@@ -1215,6 +1297,8 @@ static int bno055_remove( struct i2c_client *client )
 	device_remove_file( &indio_dev->dev, &dev_attr_cal_status );
 	device_remove_file( &indio_dev->dev, &dev_attr_cal_profile );
 	device_remove_file( &indio_dev->dev, &dev_attr_axis_map );
+	device_remove_file( &indio_dev->dev, &dev_attr_system_error );
+	device_remove_file( &indio_dev->dev, &dev_attr_system_status );
 
 	devm_iio_device_unregister( &client->dev, indio_dev );
 	return 0;
