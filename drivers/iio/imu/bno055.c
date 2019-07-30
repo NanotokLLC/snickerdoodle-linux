@@ -1,7 +1,15 @@
 /*
+ * \file bno055.c
+ * ID:            $Id: bno055.c 51 2019-07-30 18:05:00Z nanotok $
+ * Revision:      $Revision: 51 $
+ * Checked in by: $Author: nanotok $
+ * Last modified: $Date: 2019-07-30 11:05:00 -0700 (Tue, 30 Jul 2019) $
+ * 
  * BNO055 - Bosch 9-axis orientation sensor
  *
  * Copyright (c) 2016, Intel Corporation.
+ * Portions copyright (c) 2017, 2018, Optimal Ranging, Inc.
+ * Portions copyright (c) 2019, Nanotok LLC
  *
  * This file is subject to the terms and conditions of version 2 of
  * the GNU General Public License.  See the file COPYING in the main
@@ -74,6 +82,17 @@
 #define BNO055_OPT_WINDOWS				"windows"
 #define BNO055_OPT_ANDROID				"android"
 #define BNO055_OPT_AXIS_MAP				BNO055_OPT_PREFIX "axis-map"
+
+//#define USE_LOCK
+#if defined USE_LOCK
+#	define LOCK( l )		mutex_lock_interruptible( &l )
+#	define UNLOCK( l )		mutex_unlock( &l )
+#	define INIT_LOCK( l )	mutex_init( &l )
+#else
+#	define LOCK( l )		0
+#	define UNLOCK( l )
+#	define INIT_LOCK( l )
+#endif
 
 enum bno055_axis_map
 {
@@ -213,6 +232,9 @@ struct bno055_data
 	unsigned int unit_gyro;
 	unsigned int unit_accel;
 	unsigned int rot_convention;
+#	if defined USE_LOCK
+		struct mutex lock;
+#	endif // defined USE_LOCK
 };
 
 /*
@@ -251,7 +273,7 @@ static const struct regmap_access_table bno055_readable_regs =
 
 static const struct regmap_range bno055_volatile_reg_ranges[] =
 {
-	regmap_reg_range( BNO055_REG_ACC_DATA_X_LSB, BNO055_REG_SYS_ERR ),
+	regmap_reg_range( BNO055_REG_ACC_DATA_X_LSB, BNO055_REG_MAG_RADIUS_MSB ),
 };
 
 static const struct regmap_access_table bno055_volatile_regs =
@@ -273,6 +295,8 @@ static const struct regmap_config bno055_regmap_config =
 	.volatile_table = &bno055_volatile_regs,
 };
 
+static int bno055_enter_config_mode( struct bno055_data *data );
+static int bno055_exit_config_mode( struct bno055_data *data );
 static int bno055_read_simple_chan( struct iio_dev *indio_dev, struct iio_chan_spec const *chan, int *val, int *val2, long mask );
 static int bno055_read_temp_chan(struct iio_dev *indio_dev, int *val);
 static int bno055_read_quaternion( struct iio_dev *indio_dev, struct iio_chan_spec const *chan, int size, int *vals, int *val_len, long mask);
@@ -299,28 +323,61 @@ static ssize_t read_axis_map( struct device* dev, struct device_attribute* attr,
 static ssize_t show_system_error( struct device* dev, struct device_attribute* attr, char* buf );
 static ssize_t show_system_status( struct device* dev, struct device_attribute* attr, char* buf );
 
+static int bno055_enter_config_mode( struct bno055_data *data )
+{
+	int ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, BNO055_MODE_CONFIG );
+	/*
+	 * Table 3-6 says transition to CONFIGMODE from any other mode
+	 * takes 19ms.
+	 */
+//	udelay( 10 );
+	msleep( 20 );
+	return ret;
+}
+
+static int bno055_exit_config_mode( struct bno055_data *data )
+{
+	int ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, data->op_mode );
+	/*
+	 * Table 3-6 says transition from CONFIGMODE to any other mode
+	 * takes 7ms.
+	 */
+//	udelay( 10 );
+	msleep( 8 );
+	return ret;
+}
+
 static int bno055_read_simple_chan( struct iio_dev *indio_dev, struct iio_chan_spec const *chan, int *val, int *val2, long mask )
 {
 	struct bno055_data *data = iio_priv( indio_dev );
 	__le16 raw_val;
-	int ret;
-
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
 	switch ( mask )
 	{
 	case IIO_CHAN_INFO_RAW:
 		ret = regmap_bulk_read( data->regmap, chan->address, &raw_val, 2 );
 		if ( ret < 0 )
-			return ret;
+		{
+			break;
+		}
 		*val = ( s16 ) le16_to_cpu( raw_val );
 		*val2 = 0;
-		return IIO_VAL_INT;
+		ret = IIO_VAL_INT;
+		break;
 	case IIO_CHAN_INFO_OFFSET:
 		ret = regmap_bulk_read( data->regmap, chan->address + BNO055_REG_OFFSET_ADDR, &raw_val, 2 );
 		if ( ret < 0 )
-			return ret;
+		{
+			break;
+		}
 		*val = ( s16 ) le16_to_cpu( raw_val );
 		*val2 = 0;
-		return IIO_VAL_INT;
+		ret = IIO_VAL_INT;
+		break;
 	case IIO_CHAN_INFO_SCALE:
 		*val = 1;
 		switch ( chan->type )
@@ -345,82 +402,119 @@ static int bno055_read_simple_chan( struct iio_dev *indio_dev, struct iio_chan_s
 			*val2 = 16;
 			break;
 		default:
-			return -EINVAL;
+			ret = -EINVAL;
+			break;
 		}
-		return IIO_VAL_FRACTIONAL;
+		ret = IIO_VAL_FRACTIONAL;
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+	UNLOCK( data->lock );
+	return ret;
 }
 
 static int bno055_read_temp_chan(struct iio_dev *indio_dev, int *val)
 {
 	struct bno055_data *data = iio_priv(indio_dev);
 	unsigned int raw_val;
-	int ret;
-
-	ret = regmap_read(data->regmap, BNO055_REG_TEMP, &raw_val);
-	if (ret < 0)
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
 		return ret;
-
-	/*
-	 * Tables 3-36 and 3-37: one byte of data, signed, 1 LSB = 1C.
-	 * ABI wants milliC.
-	 */
-	*val = raw_val * 1000;
-
-	return IIO_VAL_INT;
+	}
+	ret = regmap_read(data->regmap, BNO055_REG_TEMP, &raw_val);
+	if ( 0 == ret )
+	{
+		/*
+		 * Tables 3-36 and 3-37: one byte of data, signed, 1 LSB = 1C.
+		 * ABI wants milliC.
+		 */
+		*val = raw_val * 1000;
+		ret = IIO_VAL_INT;
+	}
+	UNLOCK( data->lock );
+	return ret;
 }
 
 static int bno055_read_quaternion( struct iio_dev *indio_dev, struct iio_chan_spec const *chan, int size, int *vals, int *val_len, long mask)
 {
 	struct bno055_data *data = iio_priv( indio_dev );
 	__le16 raw_vals[ 4 ];
-	int i, ret;
-
+	int i;
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
 	switch ( mask )
 	{
 	case IIO_CHAN_INFO_RAW:
 		if ( size < 4 )
-			return -EINVAL;
+		{
+			ret = -EINVAL;
+			break;
+		}
 		ret = regmap_bulk_read( data->regmap, BNO055_REG_QUA_DATA_W_LSB, raw_vals, sizeof( raw_vals ) );
 		if ( ret < 0 )
-			return ret;
+		{
+			break;
+		}
 		for ( i = 0; i < 4; i++ )
 		{
 			vals[ i ] = ( s16 ) le16_to_cpu( raw_vals[ i ] );
 		}
 		*val_len = 4;
-		return IIO_VAL_INT_MULTIPLE;
+		ret = IIO_VAL_INT_MULTIPLE;
+		break;
 	case IIO_CHAN_INFO_SCALE:
 		/* Table 3-31: 1 quaternion = 2^14 LSB */
 		if ( size < 2 )
 		{
-			return -EINVAL;
+			ret = -EINVAL;
+			break;
 		}
 		vals[ 0 ] = 1;
 		vals[ 1 ] = 1 << 14;
-		return IIO_VAL_FRACTIONAL;
+		ret = IIO_VAL_FRACTIONAL;
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+	UNLOCK( data->lock );
+	return ret;
 }
 
 static int bno055_read_raw_multi( struct iio_dev *indio_dev, struct iio_chan_spec const *chan, int size, int *vals, int *val_len, long mask)
 {
+#	if defined USE_LOCK
+		struct bno055_data *data = iio_priv( indio_dev );
+#	endif // defined USE_LOCK
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
 	switch ( chan->type )
 	{
 	case IIO_ACCEL:
 	case IIO_MAGN:
 	case IIO_ANGL_VEL:
 		if ( size < 2 )
-			return -EINVAL;
+		{
+			ret = -EINVAL;
+			break;
+		}
 		*val_len = 2;
-		return bno055_read_simple_chan( indio_dev, chan, &vals[ 0 ], &vals[ 1 ], mask );
+		ret = bno055_read_simple_chan( indio_dev, chan, &vals[ 0 ], &vals[ 1 ], mask );
+		break;
 
 	case IIO_TEMP:
 		*val_len = 1;
-		return bno055_read_temp_chan( indio_dev, &vals[ 0 ] );
+		ret = bno055_read_temp_chan( indio_dev, &vals[ 0 ] );
+		break;
 
 	case IIO_ROT:
 		/*
@@ -428,14 +522,24 @@ static int bno055_read_raw_multi( struct iio_dev *indio_dev, struct iio_chan_spe
 		 * Euler angles.
 		 */
 		if ( chan->channel2 == IIO_MOD_QUATERNION )
-			return bno055_read_quaternion( indio_dev, chan, size, vals, val_len, mask );
+		{
+			ret = bno055_read_quaternion( indio_dev, chan, size, vals, val_len, mask );
+			break;
+		}
 		if ( size < 2 )
-			return -EINVAL;
+		{
+			ret = -EINVAL;
+			break;
+		}
 		*val_len = 2;
-		return bno055_read_simple_chan( indio_dev, chan, &vals[ 0 ], &vals[ 1 ], mask );
+		ret = bno055_read_simple_chan( indio_dev, chan, &vals[ 0 ], &vals[ 1 ], mask );
+		break;
 	default:
-		return -EINVAL;
+		ret = -EINVAL;
+		break;
 	}
+	UNLOCK( data->lock );
+	return ret;
 }
 
 static int bno055_init_chip( struct iio_dev *indio_dev )
@@ -445,13 +549,11 @@ static int bno055_init_chip( struct iio_dev *indio_dev )
 	u8 chip_id_bytes[ 6 ];
 	u32 chip_id;
 	u16 sw_rev;
-	int ret;
-
-	ret = bno055_read_options( indio_dev );
+	int ret = bno055_read_options( indio_dev );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set options: %d", ret );
-		return ret;
+		goto exit;
 	}
 
 	/*
@@ -467,11 +569,11 @@ static int bno055_init_chip( struct iio_dev *indio_dev )
 	/*
 	 * Select configuration mode.
 	 */
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, BNO055_MODE_CONFIG );
+	ret = bno055_enter_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to select configuration mode\n" );
-		return ret;
+		goto exit;
 	}
 
 	/*
@@ -485,7 +587,7 @@ static int bno055_init_chip( struct iio_dev *indio_dev )
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set axis map\n" );
-		return ret;
+		goto exit;
 	}
 
 	/*
@@ -496,14 +598,14 @@ static int bno055_init_chip( struct iio_dev *indio_dev )
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set measurement units\n" );
-		return ret;
+		goto exit;
 	}
 
 	ret = regmap_bulk_read( data->regmap, BNO055_REG_CHIP_ID, chip_id_bytes, sizeof( chip_id_bytes ) );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to read chip id\n" );
-		return ret;
+		goto exit;
 	}
 
 	chip_id = le32_to_cpu( *( u32 * ) chip_id_bytes );
@@ -512,34 +614,28 @@ static int bno055_init_chip( struct iio_dev *indio_dev )
 	if ( chip_id != BNO055_CHIP_ID )
 	{
 		dev_err( dev, "bad chip id; got %08x expected %08x\n", chip_id, BNO055_CHIP_ID );
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
 
 	dev_info( dev, "software revision id %04x\n", sw_rev );
 
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, data->op_mode );
+	ret = bno055_exit_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to switch operating mode\n" );
-		return ret;
+		goto exit;
 	}
-
-	/*
-	 * Table 3-6 says transition from CONFIGMODE to any other mode
-	 * takes 7ms.
-	 */
-	udelay( 10 );
-
-	return 0;
+exit:
+	return ret;
 }
 
 static int bno055_read_options( struct iio_dev *indio_dev )
 {
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
-	int ret;
 	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_MODE );
-	ret = device_property_read_u32( dev, BNO055_OPT_MODE, &data->op_mode );
+	int ret = device_property_read_u32( dev, BNO055_OPT_MODE, &data->op_mode );
 	if ( ret < 0 )
 	{
 		//dev_info( dev, "failed to read operation mode, falling back to accel+gyro\n" );
@@ -548,39 +644,41 @@ static int bno055_read_options( struct iio_dev *indio_dev )
 	if ( data->op_mode >= BNO055_MODE_MAX )
 	{
 		dev_err( dev, "bad operation mode %d\n", data->op_mode );
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
 	dev_info( dev, "selected mode 0x%02x", data->op_mode );
 	ret = bno055_option_axis_map( indio_dev );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
 	ret = bno055_option_unit_temp( indio_dev );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
 	ret = bno055_option_unit_euler( indio_dev );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
 	ret = bno055_option_unit_gyro( indio_dev );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
 	ret = bno055_option_unit_accel( indio_dev );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
 	ret = bno055_option_rot_convention( indio_dev );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
+exit:
 	return ret;
 }
 
@@ -589,22 +687,23 @@ static int bno055_option_axis_map( struct iio_dev *indio_dev )
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
 	const char* parameter_string = NULL;
-	int ret;
-	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_AXIS_MAP );
-	ret = device_property_read_string( dev, BNO055_OPT_AXIS_MAP, &parameter_string );
+	int ret = device_property_read_string( dev, BNO055_OPT_AXIS_MAP, &parameter_string );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "axis map not specified: %d\n", ret );
-		return 0;	// not there, not a problem
+		ret = 0;	// not there, not a problem
+		goto exit;
 	}
 	dev_info( dev, "axis map: %s\n", parameter_string );
 	ret = bno055_parse_axis_map( parameter_string, &data->axis );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to parse option \"%s\"", parameter_string );
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
 static int bno055_option_unit_temp( struct iio_dev *indio_dev )
@@ -612,14 +711,14 @@ static int bno055_option_unit_temp( struct iio_dev *indio_dev )
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
 	const char* parameter_string = NULL;
-	int ret;
-	data->unit_temp = BNO055_TEMP_CELSIUS;	// default to Celsius
 	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_UNIT_TEMP );
-	ret = device_property_read_string( dev, BNO055_OPT_UNIT_TEMP, &parameter_string );
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_TEMP, &parameter_string );
 	if ( ret < 0 )
 	{
 		dev_info( dev, "temperature unit not specified: %d\n", ret );
-		return 0;	// not there, not a problem
+		data->unit_temp = BNO055_TEMP_CELSIUS;	// default to Celsius
+		ret = 0;	// not there, not a problem
+		goto exit;
 	}
 	dev_info( dev, "temperature unit: %s\n", parameter_string );
 	if ( strncmp( parameter_string, BNO055_OPT_CELSIUS, sizeof( BNO055_OPT_CELSIUS ) - 1 ) )
@@ -632,9 +731,11 @@ static int bno055_option_unit_temp( struct iio_dev *indio_dev )
 	}
 	else
 	{
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
 static int bno055_option_unit_euler( struct iio_dev *indio_dev )
@@ -642,14 +743,14 @@ static int bno055_option_unit_euler( struct iio_dev *indio_dev )
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
 	const char* parameter_string = NULL;
-	int ret;
-	data->unit_euler = BNO055_EUL_DEGREES;	// default to degrees
 	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_UNIT_EULER );
-	ret = device_property_read_string( dev, BNO055_OPT_UNIT_EULER, &parameter_string );
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_EULER, &parameter_string );
 	if ( ret < 0 )
 	{
 		dev_info( dev, "Euler unit not specified: %d\n", ret );
-		return 0;	// not there, not a problem
+		data->unit_euler = BNO055_EUL_DEGREES;	// default to degrees
+		ret = 0;	// not there, not a problem
+		goto exit;
 	}
 	dev_info( dev, "Euler unit: %s\n", parameter_string );
 	if ( strncmp( parameter_string, BNO055_OPT_DEGREES, sizeof( BNO055_OPT_DEGREES ) - 1 ) )
@@ -662,9 +763,11 @@ static int bno055_option_unit_euler( struct iio_dev *indio_dev )
 	}
 	else
 	{
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
 static int bno055_option_unit_gyro( struct iio_dev *indio_dev )
@@ -672,14 +775,14 @@ static int bno055_option_unit_gyro( struct iio_dev *indio_dev )
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
 	const char* parameter_string = NULL;
-	int ret;
-	data->unit_gyro = BNO055_GYR_DEGREES;	// default to degrees
 	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_UNIT_GYRO );
-	ret = device_property_read_string( dev, BNO055_OPT_UNIT_GYRO, &parameter_string );
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_GYRO, &parameter_string );
 	if ( ret < 0 )
 	{
 		dev_info( dev, "gyro unit not specified: %d\n", ret );
-		return 0;	// not there, not a problem
+		data->unit_gyro = BNO055_GYR_DEGREES;	// default to degrees
+		ret = 0;	// not there, not a problem
+		goto exit;
 	}
 	dev_info( dev, "gyro unit: %s\n", parameter_string );
 	if ( strncmp( parameter_string, BNO055_OPT_DPS, sizeof( BNO055_OPT_DPS ) - 1 ) )
@@ -692,9 +795,11 @@ static int bno055_option_unit_gyro( struct iio_dev *indio_dev )
 	}
 	else
 	{
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
 static int bno055_option_unit_accel( struct iio_dev *indio_dev )
@@ -702,14 +807,14 @@ static int bno055_option_unit_accel( struct iio_dev *indio_dev )
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
 	const char* parameter_string = NULL;
-	int ret;
-	data->unit_accel = BNO055_ACC_MPSS;
 	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_UNIT_ACCEL );
-	ret = device_property_read_string( dev, BNO055_OPT_UNIT_ACCEL, &parameter_string );
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_ACCEL, &parameter_string );
 	if ( ret < 0 )
 	{
 		dev_info( dev, "accel unit not specified: %d\n", ret );
-		return 0;	// not there, not a problem
+		data->unit_accel = BNO055_ACC_MPSS;
+		ret = 0;	// not there, not a problem
+		goto exit;
 	}
 	dev_info( dev, "accel unit: %s\n", parameter_string );
 	if ( strncmp( parameter_string, BNO055_OPT_MPS_SQUARED, sizeof( BNO055_OPT_MPS_SQUARED ) - 1 ) )
@@ -722,9 +827,11 @@ static int bno055_option_unit_accel( struct iio_dev *indio_dev )
 	}
 	else
 	{
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
 static int bno055_option_rot_convention( struct iio_dev *indio_dev )
@@ -732,14 +839,14 @@ static int bno055_option_rot_convention( struct iio_dev *indio_dev )
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
 	const char* parameter_string = NULL;
-	int ret;
 	//dev_info( dev, "looking for option \"%s\"\n", BNO055_OPT_ROT_CONVENTION );
-	data->rot_convention = BNO055_ROT_CONVENTION_WINDOWS;
-	ret = device_property_read_string( dev, BNO055_OPT_ROT_CONVENTION, &parameter_string );
+	int ret = device_property_read_string( dev, BNO055_OPT_ROT_CONVENTION, &parameter_string );
 	if ( ret < 0 )
 	{
 		dev_info( dev, "rotation convention not specified: %d\n", ret );
-		return 0;	// not there, not a problem
+		data->rot_convention = BNO055_ROT_CONVENTION_WINDOWS;
+		ret = 0;	// not there, not a problem
+		goto exit;
 	}
 	dev_info( dev, "rotation convention: %s\n", parameter_string );
 	if ( strncmp( parameter_string, BNO055_OPT_WINDOWS, sizeof( BNO055_OPT_WINDOWS ) - 1 ) )
@@ -752,9 +859,11 @@ static int bno055_option_rot_convention( struct iio_dev *indio_dev )
 	}
 	else
 	{
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
-	return 0;
+exit:
+	return ret;
 }
 
 static bool bno055_is_axis_negative( char* axis )
@@ -807,21 +916,30 @@ static int bno055_set_axis_map( struct iio_dev *indio_dev )
 {
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct device *dev = regmap_get_device( data->regmap );
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
 	/*
 	* Axis map
 	*/
-	int ret = regmap_write( data->regmap, BNO055_REG_AXIS_MAP, data->axis.axis.raw );
+	ret = regmap_write( data->regmap, BNO055_REG_AXIS_MAP, data->axis.axis.raw );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set axis map\n" );
-		return ret;
+		ret = ret;
+		goto exit;
 	}
 	ret = regmap_write( data->regmap, BNO055_REG_AXIS_SIGN, data->axis.sign.raw );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set axis sign\n" );
-		return ret;
+		ret = ret;
+		goto exit;
 	}
+exit:
+	UNLOCK( data->lock );
 	return ret;
 }
 
@@ -879,8 +997,9 @@ static void bno055_init_simple_channels( struct iio_chan_spec *p, enum iio_chan_
 	 * non-fusion modes, the output offset is exposed separately.
 	 */
 	if ( has_offset )
+	{
 		mask |= BIT( IIO_CHAN_INFO_OFFSET );
-
+	}
 	for ( i = 0; i < 3; i++ )
 	{
 		p[ i ] = ( struct iio_chan_spec )
@@ -954,10 +1073,9 @@ static int bno055_init_channels( struct iio_dev *indio_dev )
 		*p = ( struct iio_chan_spec )
 		{
 			.type = IIO_ROT,
-				.info_mask_separate = BIT( IIO_CHAN_INFO_RAW ) |
-				BIT( IIO_CHAN_INFO_SCALE ),
-				.modified = 1,
-				.channel2 = IIO_MOD_QUATERNION,
+			.info_mask_separate = BIT( IIO_CHAN_INFO_RAW ) | BIT( IIO_CHAN_INFO_SCALE ),
+			.modified = 1,
+			.channel2 = IIO_MOD_QUATERNION,
 		};
 		p++;
 	}
@@ -966,7 +1084,7 @@ static int bno055_init_channels( struct iio_dev *indio_dev )
 	*p = ( struct iio_chan_spec )
 	{
 		.type = IIO_TEMP,
-			.info_mask_separate = BIT( IIO_CHAN_INFO_PROCESSED ),
+		.info_mask_separate = BIT( IIO_CHAN_INFO_PROCESSED ),
 	};
 
 	indio_dev->channels = channels;
@@ -991,17 +1109,23 @@ static ssize_t show_calibration_status( struct device* dev, struct device_attrib
 
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
-
-	int ret = regmap_read( data->regmap, BNO055_REG_CAL_STATUS, &raw_val.data );
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	ret = regmap_read( data->regmap, BNO055_REG_CAL_STATUS, &raw_val.data );
 	if ( ret < 0 )
 	{
-		return ( ssize_t ) ret;
+		goto exit;
 	}
 	ret = scnprintf( buf, PAGE_SIZE, "%d %d %d %d\n",
 		raw_val.system,
 		raw_val.gyroscope,
 		raw_val.accelerometer,
 		raw_val.magnetometer );
+exit:
+	UNLOCK( data->lock );
 	return ( ssize_t ) ret;
 }
 
@@ -1015,13 +1139,19 @@ static ssize_t show_system_error( struct device* dev, struct device_attribute* a
 
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
-
-	int ret = regmap_read( data->regmap, BNO055_REG_SYS_ERR, &raw_val.data );
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	ret = regmap_read( data->regmap, BNO055_REG_SYS_ERR, &raw_val.data );
 	if ( ret < 0 )
 	{
-		return ( ssize_t ) ret;
+		goto exit;
 	}
 	ret = scnprintf( buf, PAGE_SIZE, "%d\n", raw_val.error );
+exit:
+	UNLOCK( data->lock );
 	return ( ssize_t ) ret;
 }
 
@@ -1035,13 +1165,19 @@ static ssize_t show_system_status( struct device* dev, struct device_attribute* 
 
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
-
-	int ret = regmap_read( data->regmap, BNO055_REG_SYS_STATUS, &raw_val.data );
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	ret = regmap_read( data->regmap, BNO055_REG_SYS_STATUS, &raw_val.data );
 	if ( ret < 0 )
 	{
-		return ( ssize_t ) ret;
+		goto exit;
 	}
 	ret = scnprintf( buf, PAGE_SIZE, "%d\n", raw_val.status );
+exit:
+	UNLOCK( data->lock );
 	return ( ssize_t ) ret;
 }
 
@@ -1050,22 +1186,28 @@ static ssize_t read_calibration_profile( struct device* dev, struct device_attri
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct bno055_calibration_profile raw_val;
-	int ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, BNO055_MODE_CONFIG );
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	ret = bno055_enter_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to select configuration mode\n" );
-		return ret;
+		goto exit;
 	}
 	ret = regmap_bulk_read( data->regmap, BNO055_REG_ACC_OFFSET_X_LSB, &raw_val, sizeof( raw_val ) );
 	if ( ret < 0 )
 	{
-		return ret;
+		dev_err( dev, "failed to read calibration profile\n" );
+		goto exit;
 	}
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, data->op_mode );
+	ret = bno055_exit_config_mode( data );
 	if ( ret < 0 )
 	{
-		dev_err( dev, "failed to set operating mode\n" );
-		return ret;
+		dev_err( dev, "failed to select fusion mode\n" );
+		goto exit;
 	}
 	ret = scnprintf( buf, PAGE_SIZE, CAL_PROFILE_FORMAT "\n",
 		raw_val.AccelerometerOffsetX,
@@ -1079,6 +1221,8 @@ static ssize_t read_calibration_profile( struct device* dev, struct device_attri
 		raw_val.GyroscopeOffsetZ,
 		raw_val.AccelerometerRadius,
 		raw_val.MagnetometerRadius );
+exit:
+	UNLOCK( data->lock );
 	return ret;
 }
 
@@ -1087,8 +1231,13 @@ static ssize_t write_calibration_profile( struct device* dev, struct device_attr
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct bno055_calibration_profile raw_val;
-	int ret;
-	int number_of_fields = sscanf( buf, CAL_PROFILE_FORMAT,
+	int number_of_fields;
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	number_of_fields = sscanf( buf, CAL_PROFILE_FORMAT,
 		&raw_val.AccelerometerOffsetX,
 		&raw_val.AccelerometerOffsetY,
 		&raw_val.AccelerometerOffsetZ,
@@ -1102,55 +1251,63 @@ static ssize_t write_calibration_profile( struct device* dev, struct device_attr
 		&raw_val.MagnetometerRadius );
 	if ( number_of_fields != sizeof( raw_val ) / sizeof( u16 ) )
 	{
-		return -number_of_fields;
+		ret = -number_of_fields;
+		goto exit;
 	}
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, BNO055_MODE_CONFIG );
+	ret = bno055_enter_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to select configuration mode\n" );
-		return ret;
+		goto exit;
 	}
 	ret = regmap_bulk_write( data->regmap, BNO055_REG_ACC_OFFSET_X_LSB, &raw_val, sizeof( raw_val ) );
 	if ( ret < 0 )
 	{
-		return ret;
+		goto exit;
 	}
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, data->op_mode );
+	ret = bno055_exit_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set operating mode\n" );
-		return ret;
+		goto exit;
 	}
-	return count;
+	ret = count;
+exit:
+	UNLOCK( data->lock );
+	return ret;
 }
 
 static ssize_t read_axis_map( struct device* dev, struct device_attribute* attr, char* buf )
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
-
 	struct bno055_axis axis;
-
-	int ret = regmap_read( data->regmap, BNO055_REG_AXIS_MAP, &axis.axis.raw );
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	ret = regmap_read( data->regmap, BNO055_REG_AXIS_MAP, &axis.axis.raw );
 	if ( ret < 0 )
 	{
-		return ( ssize_t ) ret;
+		goto exit;
 	}
 	ret = regmap_read( data->regmap, BNO055_REG_AXIS_SIGN, &axis.sign.raw );
 	if ( ret < 0 )
 	{
-		return ( ssize_t ) ret;
+		goto exit;
 	}
 	ret = scnprintf( buf, PAGE_SIZE, "%s%c %s%c %s%c\n",
 		axis.sign.x ? "-" : "", 'x' + axis.axis.x,
 		axis.sign.y ? "-" : "", 'x' + axis.axis.y,
 		axis.sign.z ? "-" : "", 'x' + axis.axis.z );
+exit:
+	UNLOCK( data->lock );
 	return ( ssize_t ) ret;
 }
 
 static ssize_t write_axis_map( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
 {
-	int ret;
 	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct bno055_axis axis;
@@ -1160,32 +1317,40 @@ static ssize_t write_axis_map( struct device* dev, struct device_attribute* attr
 		data->axis.sign.x ? "-" : "", 'x' + data->axis.axis.x,
 		data->axis.sign.y ? "-" : "", 'x' + data->axis.axis.y,
 		data->axis.sign.z ? "-" : "", 'x' + data->axis.axis.z );*/
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
 	ret = bno055_parse_axis_map( buf, &axis );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to parse axis definition\n" );
-		return ret;
+		goto exit;
 	}
 	data->axis = axis;
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, BNO055_MODE_CONFIG );
+	ret = bno055_enter_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set configuration mode\n" );
-		return ret;
+		goto exit;
 	}
 	ret = bno055_set_axis_map( indio_dev );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set axis map\n" );
-		return ret;
+		goto exit;
 	}
-	ret = regmap_update_bits( data->regmap, BNO055_REG_OPR_MODE, BNO055_OPR_MODE_MASK, data->op_mode );
+	ret = bno055_exit_config_mode( data );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set operating mode\n" );
-		return ret;
+		goto exit;
 	}
-	return count;
+	ret = count;
+exit:
+	UNLOCK( data->lock );
+	return ret;
 }
 
 static const struct iio_info bno055_info =
@@ -1212,7 +1377,7 @@ static int bno055_probe( struct i2c_client *client, const struct i2c_device_id *
 		return -ENOMEM;
 	}
 	data = iio_priv( indio_dev );
-
+	INIT_LOCK( data->lock );
 	data->regmap = devm_regmap_init_i2c( client, &bno055_regmap_config );
 	if ( IS_ERR( data->regmap ) )
 	{
