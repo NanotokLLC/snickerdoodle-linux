@@ -1,9 +1,9 @@
 /*
  * \file bno055.c
- * ID:            $Id: bno055.c 51 2019-07-30 18:05:00Z nanotok $
- * Revision:      $Revision: 51 $
+ * ID:            $Id: bno055.c 127 2019-10-03 21:11:43Z nanotok $
+ * Revision:      $Revision: 127 $
  * Checked in by: $Author: nanotok $
- * Last modified: $Date: 2019-07-30 11:05:00 -0700 (Tue, 30 Jul 2019) $
+ * Last modified: $Date: 2019-10-03 14:11:43 -0700 (Thu, 03 Oct 2019) $
  * 
  * BNO055 - Bosch 9-axis orientation sensor
  *
@@ -174,7 +174,8 @@ enum bno055_operation_mode
 	BNO055_MODE_NDOF_FMC_OFF,
 	BNO055_MODE_NDOF,
 
-	BNO055_MODE_MAX,
+	BNO055_MODE_MIN = BNO055_MODE_ACC_ONLY,
+	BNO055_MODE_MAX = BNO055_MODE_NDOF
 };
 
 /*
@@ -288,11 +289,12 @@ static const struct regmap_config bno055_regmap_config =
 	.val_bits = 8,
 
 	.max_register = BNO055_REG_MAG_RADIUS_MSB + 1,
-	.cache_type = REGCACHE_RBTREE,
+	// .cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_NONE,
 
 	.wr_table = &bno055_writable_regs,
 	.rd_table = &bno055_readable_regs,
-	.volatile_table = &bno055_volatile_regs,
+	//.volatile_table = &bno055_volatile_regs,
 };
 
 static int bno055_enter_config_mode( struct bno055_data *data );
@@ -316,12 +318,14 @@ static int bno055_option_rot_convention( struct iio_dev *indio_dev );
 static bool bno055_fusion_mode( struct bno055_data *data );
 static void bno055_init_simple_channels( struct iio_chan_spec *p, enum iio_chan_type type, u8 address, bool has_offset );
 static int bno055_init_channels( struct iio_dev *indio_dev );
-static ssize_t show_calibration_status( struct device* dev, struct device_attribute* attr, char* buf );
+static ssize_t read_opr_mode( struct device* dev, struct device_attribute* attr, char* buf );
+static ssize_t write_opr_mode( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+static ssize_t read_calibration_status( struct device* dev, struct device_attribute* attr, char* buf );
 static ssize_t read_calibration_profile( struct device* dev, struct device_attribute* attr, char* buf );
 static ssize_t write_calibration_profile( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
 static ssize_t read_axis_map( struct device* dev, struct device_attribute* attr, char* buf );
-static ssize_t show_system_error( struct device* dev, struct device_attribute* attr, char* buf );
-static ssize_t show_system_status( struct device* dev, struct device_attribute* attr, char* buf );
+static ssize_t read_system_error( struct device* dev, struct device_attribute* attr, char* buf );
+static ssize_t read_system_status( struct device* dev, struct device_attribute* attr, char* buf );
 
 static int bno055_enter_config_mode( struct bno055_data *data )
 {
@@ -641,7 +645,7 @@ static int bno055_read_options( struct iio_dev *indio_dev )
 		//dev_info( dev, "failed to read operation mode, falling back to accel+gyro\n" );
 		data->op_mode = BNO055_MODE_ACC_GYRO;
 	}
-	if ( data->op_mode >= BNO055_MODE_MAX )
+	if ( ( data->op_mode < BNO055_MODE_MIN ) || ( data->op_mode > BNO055_MODE_MAX ) )
 	{
 		dev_err( dev, "bad operation mode %d\n", data->op_mode );
 		ret = -EINVAL;
@@ -1093,7 +1097,72 @@ static int bno055_init_channels( struct iio_dev *indio_dev )
 	return 0;
 }
 
-static ssize_t show_calibration_status( struct device* dev, struct device_attribute* attr, char* buf )
+static ssize_t read_opr_mode( struct device* dev, struct device_attribute* attr, char* buf )
+{
+	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
+	struct bno055_data *data = iio_priv( indio_dev );
+	unsigned int mode;
+	int ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	ret = regmap_read( data->regmap, BNO055_REG_OPR_MODE, &mode );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	mode &= BNO055_OPR_MODE_MASK;
+	ret = scnprintf( buf, PAGE_SIZE, "%u\n", mode );
+exit:
+	UNLOCK( data->lock );
+	return ( ssize_t ) ret;
+}
+
+static ssize_t write_opr_mode( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+{
+	struct iio_dev *indio_dev = i2c_get_clientdata( to_i2c_client( dev ) );
+	struct bno055_data *data = iio_priv( indio_dev );
+	unsigned int mode;
+	int number_of_fields;
+	int ret;
+	ret = LOCK( data->lock );
+	if ( ret )
+	{
+		return ret;
+	}
+	number_of_fields = sscanf( buf, "%u", &mode );
+	if ( number_of_fields != 1 )
+	{
+		dev_err( dev, "expected 1 values, got %d\n", number_of_fields );
+		ret = -EINVAL;
+		goto exit;
+	}
+	if ( ( mode < BNO055_MODE_MIN ) || ( mode > BNO055_MODE_MAX ) )
+	{
+		ret = -EINVAL;
+		goto exit;
+	}
+	data->op_mode = mode;
+	ret = bno055_enter_config_mode( data );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to select configuration mode\n" );
+		goto exit;
+	}
+	ret = bno055_exit_config_mode( data );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set operating mode\n" );
+		goto exit;
+	}
+	ret = count;
+exit:
+	UNLOCK( data->lock );
+	return ret;
+}
+
+static ssize_t read_calibration_status( struct device* dev, struct device_attribute* attr, char* buf )
 {
 	union
 	{
@@ -1129,7 +1198,7 @@ exit:
 	return ( ssize_t ) ret;
 }
 
-static ssize_t show_system_error( struct device* dev, struct device_attribute* attr, char* buf )
+static ssize_t read_system_error( struct device* dev, struct device_attribute* attr, char* buf )
 {
 	union
 	{
@@ -1155,7 +1224,7 @@ exit:
 	return ( ssize_t ) ret;
 }
 
-static ssize_t show_system_status( struct device* dev, struct device_attribute* attr, char* buf )
+static ssize_t read_system_status( struct device* dev, struct device_attribute* attr, char* buf )
 {
 	union
 	{
@@ -1221,6 +1290,18 @@ static ssize_t read_calibration_profile( struct device* dev, struct device_attri
 		raw_val.GyroscopeOffsetZ,
 		raw_val.AccelerometerRadius,
 		raw_val.MagnetometerRadius );
+	printk( KERN_DEBUG KBUILD_MODNAME ": %s: read " CAL_PROFILE_FORMAT "\n", __func__, 
+		raw_val.AccelerometerOffsetX,
+		raw_val.AccelerometerOffsetY,
+		raw_val.AccelerometerOffsetZ,
+		raw_val.MagnetometerOffsetX,
+		raw_val.MagnetometerOffsetY,
+		raw_val.MagnetometerOffsetZ,
+		raw_val.GyroscopeOffsetX,
+		raw_val.GyroscopeOffsetY,
+		raw_val.GyroscopeOffsetZ,
+		raw_val.AccelerometerRadius,
+		raw_val.MagnetometerRadius );
 exit:
 	UNLOCK( data->lock );
 	return ret;
@@ -1232,7 +1313,8 @@ static ssize_t write_calibration_profile( struct device* dev, struct device_attr
 	struct bno055_data *data = iio_priv( indio_dev );
 	struct bno055_calibration_profile raw_val;
 	int number_of_fields;
-	int ret = LOCK( data->lock );
+	int ret;
+	ret = LOCK( data->lock );
 	if ( ret )
 	{
 		return ret;
@@ -1249,9 +1331,22 @@ static ssize_t write_calibration_profile( struct device* dev, struct device_attr
 		&raw_val.GyroscopeOffsetZ,
 		&raw_val.AccelerometerRadius,
 		&raw_val.MagnetometerRadius );
+	printk( KERN_DEBUG KBUILD_MODNAME ": %s: write: " CAL_PROFILE_FORMAT "\n", __func__, 
+		raw_val.AccelerometerOffsetX,
+		raw_val.AccelerometerOffsetY,
+		raw_val.AccelerometerOffsetZ,
+		raw_val.MagnetometerOffsetX,
+		raw_val.MagnetometerOffsetY,
+		raw_val.MagnetometerOffsetZ,
+		raw_val.GyroscopeOffsetX,
+		raw_val.GyroscopeOffsetY,
+		raw_val.GyroscopeOffsetZ,
+		raw_val.AccelerometerRadius,
+		raw_val.MagnetometerRadius );
 	if ( number_of_fields != sizeof( raw_val ) / sizeof( u16 ) )
 	{
-		ret = -number_of_fields;
+		dev_err( dev, "expected 11 values, got %d\n", number_of_fields );
+		ret = -EINVAL;
 		goto exit;
 	}
 	ret = bno055_enter_config_mode( data );
@@ -1263,6 +1358,7 @@ static ssize_t write_calibration_profile( struct device* dev, struct device_attr
 	ret = regmap_bulk_write( data->regmap, BNO055_REG_ACC_OFFSET_X_LSB, &raw_val, sizeof( raw_val ) );
 	if ( ret < 0 )
 	{
+		dev_err( dev, "failed regmap_bulk_write: %d\n", ret );
 		goto exit;
 	}
 	ret = bno055_exit_config_mode( data );
@@ -1359,11 +1455,12 @@ static const struct iio_info bno055_info =
 	.read_raw_multi = &bno055_read_raw_multi,
 };
 
-static DEVICE_ATTR( cal_status, 0444, show_calibration_status, NULL );
+static DEVICE_ATTR( mode, 0644, read_opr_mode, write_opr_mode );
+static DEVICE_ATTR( cal_status, 0444, read_calibration_status, NULL );
 static DEVICE_ATTR( cal_profile, 0644, read_calibration_profile, write_calibration_profile );
 static DEVICE_ATTR( axis_map, 0644, read_axis_map, write_axis_map );
-static DEVICE_ATTR( system_error, 0444, show_system_error, NULL );
-static DEVICE_ATTR( system_status, 0444, show_system_status, NULL );
+static DEVICE_ATTR( system_error, 0444, read_system_error, NULL );
+static DEVICE_ATTR( system_status, 0444, read_system_status, NULL );
 
 static int bno055_probe( struct i2c_client *client, const struct i2c_device_id *id )
 {
@@ -1406,6 +1503,15 @@ static int bno055_probe( struct i2c_client *client, const struct i2c_device_id *
 		return ret;
 	}
 
+	/*
+	mode
+	*/
+	ret = device_create_file( &indio_dev->dev, &dev_attr_mode );
+	if ( ret ){
+		dev_err( &client->dev, "failed to create mode sysfs entry.\n" );
+		devm_iio_device_unregister( &client->dev, indio_dev );
+		return ret;
+	}
 	/*
 	calibration status
 	*/
@@ -1459,6 +1565,7 @@ static int bno055_remove( struct i2c_client *client )
 {
 	struct iio_dev *indio_dev = i2c_get_clientdata( client );
 
+	device_remove_file( &indio_dev->dev, &dev_attr_mode );
 	device_remove_file( &indio_dev->dev, &dev_attr_cal_status );
 	device_remove_file( &indio_dev->dev, &dev_attr_cal_profile );
 	device_remove_file( &indio_dev->dev, &dev_attr_axis_map );
