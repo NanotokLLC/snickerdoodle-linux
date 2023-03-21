@@ -55,7 +55,7 @@ enum bq25890_fields {
 	/* Reg08 */ F_BATCMP, F_VCLAMP, F_TREG,
 	/* Reg09 */ F_FORCE_ICO, F_TMR2X_EN, F_BATFET_DIS, F_JEITA_VSET, F_BATFET_DLY, F_BATFET_RST_EN, F_PUMPX_UP, F_PUMPX_DN, F_BOOSTV,
 	/* Reg0A */ F_BOOSTI,
-	/* Reg0B */ F_VBUS_STAT, F_CHG_STAT, F_PG_STAT, F_SDP_STAT, F_VSYS_STAT, F_WD_FAULT, F_BOOST_FAULT, F_CHG_FAULT, F_BAT_FAULT,
+	/* Reg0B */ F_VBUS_STAT, F_CHRG_STAT, F_PG_STAT, F_SDP_STAT, F_VSYS_STAT, F_WD_FAULT, F_BOOST_FAULT, F_CHG_FAULT, F_BAT_FAULT,
 	/* Reg0C */ F_NTC_FAULT,
 	/* Reg0D */ F_FORCE_VINDPM, F_VINDPM,
 	/* Reg0E */ F_THERM_STAT, F_BATV,
@@ -258,7 +258,7 @@ static const struct ntk_reg_field bq25890_reg_fields[] = {
 	DEFINE_FIELD( 0x0A, 0, 2, BOOSTI ),
 	/* REG0B */
 	DEFINE_FIELD( 0x0B, 5, 7, VBUS_STAT ),
-	DEFINE_FIELD( 0x0B, 3, 4, CHG_STAT ),
+	DEFINE_FIELD( 0x0B, 3, 4, CHRG_STAT ),
 	DEFINE_FIELD( 0x0B, 2, 2, PG_STAT ),
 	DEFINE_FIELD( 0x0B, 1, 1, SDP_STAT ),
 	DEFINE_FIELD( 0x0B, 0, 0, VSYS_STAT ),
@@ -295,199 +295,6 @@ static const struct ntk_reg_field bq25890_reg_fields[] = {
 	DEFINE_FIELD( 0x14, 0, 1, DEV_REV )
 };
 
-//static const struct ntk_reg_field bq25890_reg_fields[] = {
-//	/* REG00 */
-//	[F_EN_HIZ]			= REG_FIELD(0x00, 7, 7),
-//	[F_EN_ILIM]			= REG_FIELD(0x00, 6, 6),
-//	[F_IINLIM]			= REG_FIELD(0x00, 0, 5),
-//	/* REG01 */
-//	[F_BHOT]			= REG_FIELD(0x01, 6, 7),
-//	[F_BCOLD]			= REG_FIELD(0x01, 5, 5),
-//	[F_VINDPM_OS]		= REG_FIELD(0x01, 0, 4),
-//	/* REG02 */
-//	[F_CONV_START]		= REG_FIELD(0x02, 7, 7),
-//	[F_CONV_RATE]		= REG_FIELD(0x02, 6, 6),
-//	[F_BOOSTF]			= REG_FIELD(0x02, 5, 5),
-//	[F_ICO_EN]			= REG_FIELD(0x02, 4, 4),
-//	[F_HVDCP_EN]		= REG_FIELD(0x02, 3, 3),
-//	[F_MAXC_EN]			= REG_FIELD(0x02, 2, 2),
-//	[F_FORCE_DPM]		= REG_FIELD(0x02, 1, 1),
-//	[F_AUTO_DPDM_EN]	= REG_FIELD(0x02, 0, 0),
-//	/* REG03 */
-//	[F_BAT_LOAD_EN]		= REG_FIELD(0x03, 7, 7),
-//	[F_WD_RST]			= REG_FIELD(0x03, 6, 6),
-//	[F_OTG_CFG]			= REG_FIELD(0x03, 5, 5),
-//	[F_CHG_CFG]			= REG_FIELD(0x03, 4, 4),
-//	[F_SYSVMIN]			= REG_FIELD(0x03, 1, 3),
-//	/* REG04 */
-//	[F_PUMPX_EN]		= REG_FIELD(0x04, 7, 7),
-//	[F_ICHG]			= REG_FIELD(0x04, 0, 6),
-//	/* REG05 */
-//	[F_IPRECHG]			= REG_FIELD(0x05, 4, 7),
-//	[F_ITERM]			= REG_FIELD(0x05, 0, 3),
-//	/* REG06 */
-//	[F_VREG]			= REG_FIELD(0x06, 2, 7),
-//	[F_BATLOWV]			= REG_FIELD(0x06, 1, 1),
-//	[F_VRECHG]			= REG_FIELD(0x06, 0, 0),
-//	/* REG07 */
-//	[F_TERM_EN]			= REG_FIELD(0x07, 7, 7),
-//	[F_STAT_DIS]		= REG_FIELD(0x07, 6, 6),
-//	[F_WD]				= REG_FIELD(0x07, 4, 5),
-//	[F_TMR_EN]			= REG_FIELD(0x07, 3, 3),
-//	[F_CHG_TMR]			= REG_FIELD(0x07, 1, 2),
-//	[F_JEITA_ISET]		= REG_FIELD(0x07, 0, 0),
-//	/* REG08 */
-//	[F_BATCMP]			= REG_FIELD(0x08, 6, 7),
-//	[F_VCLAMP]			= REG_FIELD(0x08, 2, 4),
-//	[F_TREG]			= REG_FIELD(0x08, 0, 1),
-//	/* REG09 */
-//	[F_FORCE_ICO]		= REG_FIELD(0x09, 7, 7),
-//	[F_TMR2X_EN]		= REG_FIELD(0x09, 6, 6),
-//	[F_BATFET_DIS]		= REG_FIELD(0x09, 5, 5),
-//	[F_JEITA_VSET]		= REG_FIELD(0x09, 4, 4),
-//	[F_BATFET_DLY]		= REG_FIELD(0x09, 3, 3),
-//	[F_BATFET_RST_EN]	= REG_FIELD(0x09, 2, 2),
-//	[F_PUMPX_UP]		= REG_FIELD(0x09, 1, 1),
-//	[F_PUMPX_DN]		= REG_FIELD(0x09, 0, 0),
-//	/* REG0A */
-//	[F_BOOSTV]			= REG_FIELD(0x0A, 4, 7),
-//	[F_BOOSTI]			= REG_FIELD(0x0A, 0, 2),
-//	/* REG0B */
-//	[F_VBUS_STAT]		= REG_FIELD(0x0B, 5, 7),
-//	[F_CHG_STAT]		= REG_FIELD(0x0B, 3, 4),
-//	[F_PG_STAT]			= REG_FIELD(0x0B, 2, 2),
-//	[F_SDP_STAT]		= REG_FIELD(0x0B, 1, 1),
-//	[F_VSYS_STAT]		= REG_FIELD(0x0B, 0, 0),
-//	/* REG0C */
-//	[F_WD_FAULT]		= REG_FIELD(0x0C, 7, 7),
-//	[F_BOOST_FAULT]		= REG_FIELD(0x0C, 6, 6),
-//	[F_CHG_FAULT]		= REG_FIELD(0x0C, 4, 5),
-//	[F_BAT_FAULT]		= REG_FIELD(0x0C, 3, 3),
-//	[F_NTC_FAULT]		= REG_FIELD(0x0C, 0, 2),
-//	/* REG0D */
-//	[F_FORCE_VINDPM]	= REG_FIELD(0x0D, 7, 7),
-//	[F_VINDPM]			= REG_FIELD(0x0D, 0, 6),
-//	/* REG0E */
-//	[F_THERM_STAT]		= REG_FIELD(0x0E, 7, 7),
-//	[F_BATV]			= REG_FIELD(0x0E, 0, 6),
-//	/* REG0F */
-//	[F_SYSV]			= REG_FIELD(0x0F, 0, 6),
-//	/* REG10 */
-//	[F_TSPCT]			= REG_FIELD(0x10, 0, 6),
-//	/* REG11 */
-//	[F_VBUS_GD]			= REG_FIELD(0x11, 7, 7),
-//	[F_VBUSV]			= REG_FIELD(0x11, 0, 6),
-//	/* REG12 */
-//	[F_ICHGR]			= REG_FIELD(0x12, 0, 6),
-//	/* REG13 */
-//	[F_VDPM_STAT]		= REG_FIELD(0x13, 7, 7),
-//	[F_IDPM_STAT]		= REG_FIELD(0x13, 6, 6),
-//	[F_IDPM_LIM]		= REG_FIELD(0x13, 0, 5),
-//	/* REG14 */
-//	[F_REG_RST]			= REG_FIELD(0x14, 7, 7),
-//	[F_ICO_OPTIMIZED]	= REG_FIELD(0x14, 6, 6),
-//	[F_PN]				= REG_FIELD(0x14, 3, 5),
-//	[F_TS_PROFILE]		= REG_FIELD(0x14, 2, 2),
-//	[F_DEV_REV]			= REG_FIELD(0x14, 0, 1)
-//};
-
-#if 0 // defined NEB_DEBUG
-	static const char* bq25890_reg_field_names[] = {
-		/* REG00 */
-		[F_EN_HIZ]			= "EN_HIZ",
-		[F_EN_ILIM]			= "EN_ILIM",
-		[F_IINLIM]			= "IINLIM",
-		/* REG01 */
-		[F_BHOT]			= "BHOT",
-		[F_BCOLD]			= "BCOLD",
-		[F_VINDPM_OS]		= "VINDPM_OS",
-		/* REG02 */
-		[F_CONV_START]		= "CONV_START",
-		[F_CONV_RATE]		= "CONV_RATE",
-		[F_BOOSTF]			= "BOOSTF",
-		[F_ICO_EN]			= "ICO_EN",
-		[F_HVDCP_EN]		= "HVDCP_EN",
-		[F_MAXC_EN]			= "MAXC_EN",
-		[F_FORCE_DPM]		= "FORCE_DPM",
-		[F_AUTO_DPDM_EN]	= "AUTO_DPDM_EN",
-		/* REG03 */
-		[F_BAT_LOAD_EN]		= "BAT_LOAD_EN",
-		[F_WD_RST]			= "WD_RST",
-		[F_OTG_CFG]			= "OTG_CFG",
-		[F_CHG_CFG]			= "CHG_CFG",
-		[F_SYSVMIN]			= "SYSVMIN",
-		/* REG04 */
-		[F_PUMPX_EN]		= "PUMPX_EN",
-		[F_ICHG]			= "ICHG",
-		/* REG05 */
-		[F_IPRECHG]			= "IPRECHG",
-		[F_ITERM]			= "ITERM",
-		/* REG06 */
-		[F_VREG]			= "VREG",
-		[F_BATLOWV]			= "BATLOWV",
-		[F_VRECHG]			= "VRECHG",
-		/* REG07 */
-		[F_TERM_EN]			= "TERM_EN",
-		[F_STAT_DIS]		= "STAT_DIS",
-		[F_WD]				= "WD",
-		[F_TMR_EN]			= "TMR_EN",
-		[F_CHG_TMR]			= "CHG_TMR",
-		[F_JEITA_ISET]		= "JEITA_ISET",
-		/* REG08 */
-		[F_BATCMP]			= "BATCMP",
-		[F_VCLAMP]			= "VCLAMP",
-		[F_TREG]			= "TREG",
-		/* REG09 */
-		[F_FORCE_ICO]		= "FORCE_ICO",
-		[F_TMR2X_EN]		= "TMR2X_EN",
-		[F_BATFET_DIS]		= "BATFET_DIS",
-		[F_JEITA_VSET]		= "JEITA_VSET",
-		[F_BATFET_DLY]		= "BATFET_DLY",
-		[F_BATFET_RST_EN]	= "BATFET_RST_EN",
-		[F_PUMPX_UP]		= "PUMPX_UP",
-		[F_PUMPX_DN]		= "PUMPX_DN",
-		/* REG0A */
-		[F_BOOSTV]			= "BOOSTV",
-		[F_BOOSTI]			= "BOOSTI",
-		/* REG0B */
-		[F_VBUS_STAT]		= "VBUS_STAT",
-		[F_CHG_STAT]		= "CHG_STAT",
-		[F_PG_STAT]			= "PG_STAT",
-		[F_SDP_STAT]		= "SDP_STAT",
-		[F_VSYS_STAT]		= "VSYS_STAT",
-		/* REG0C */
-		[F_WD_FAULT]		= "WD_FAULT",
-		[F_BOOST_FAULT]		= "BOOST_FAULT",
-		[F_CHG_FAULT]		= "CHG_FAULT",
-		[F_BAT_FAULT]		= "BAT_FAULT",
-		[F_NTC_FAULT]		= "NTC_FAULT",
-		/* REG0D */
-		[F_FORCE_VINDPM]	= "FORCE_VINDPM",
-		[F_VINDPM]			= "VINDPM",
-		/* REG0E */
-		[F_THERM_STAT]		= "THERM_STAT",
-		[F_BATV]			= "BATV",
-		/* REG0F */
-		[F_SYSV]			= "SYSV",
-		/* REG10 */
-		[F_TSPCT]			= "TSPCT",
-		/* REG11 */
-		[F_VBUS_GD]			= "VBUS_GD",
-		[F_VBUSV]			= "VBUSV",
-		/* REG12 */
-		[F_ICHGR]			= "ICHGR",
-		/* REG13 */
-		[F_VDPM_STAT]		= "VDPM_STAT",
-		[F_IDPM_STAT]		= "IDPM_STAT",
-		[F_IDPM_LIM]		= "IDPM_LIM",
-		/* REG14 */
-		[F_REG_RST]			= "REG_RST",
-		[F_ICO_OPTIMIZED]	= "ICO_OPTIMIZED",
-		[F_PN]				= "PN",
-		[F_TS_PROFILE]		= "TS_PROFILE",
-		[F_DEV_REV]			= "DEV_REV"
-	};
-#endif // defined NEB_DEBUG
 /*
  * Most of the val -> idx conversions can be computed, given the minimum,
  * maximum and the step between values. For the rest of conversions, we use
@@ -727,7 +534,7 @@ static int bq25890_get_chip_state(struct bq25890_device *bq,
 		enum bq25890_fields id;
 		u8 *data;
 	} state_fields[] = {
-		{F_CHG_STAT,	&state->chrg_status},
+		{F_CHRG_STAT,	&state->chrg_status},
 		{F_PG_STAT,	&state->online},
 		{F_VSYS_STAT,	&state->vsys_status},
 		{F_BOOST_FAULT, &state->boost_fault},
