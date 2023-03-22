@@ -710,6 +710,12 @@ config DMATEST
 	  Simple DMA test client. Say N unless you're debugging a
 	  DMA Device driver.
 
+config DMA_CORE100
+    tristate "Core100 driver"
+    depends on DMA_ENGINE
+    help
+      "Simple DMA circular buffer for core100 FIFO(s)"
+
 config DMA_ENGINE_RAID
 	bool
 
