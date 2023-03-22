@@ -19,6 +19,12 @@
 
 #include <linux/w1.h>
 
+/*
+2020.01.31:NEB: Control device registration
+*/
+#define REGISTER_OF	1
+#define DS2482_DRIVER_NAME				"ds2482"
+
 /**
  * Allow the active pullup to be disabled, default is enabled.
  *
@@ -550,9 +556,28 @@ static const struct i2c_device_id ds2482_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, ds2482_id);
 
+/*
+2020.01.31:NEB: an of_device_id table is required even if the driver
+doesn't register as an OF device.
+*/
+#if REGISTER_OF	// 2020.01.31:NEB: an of_device_id table is required even if the driver
+	static const struct of_device_id ds2482_i2c_of_match[] =
+	{
+		{
+			.compatible = "maxim,ds2482",
+			.data = DS2482_DRIVER_NAME
+		},
+		{ },
+	};
+	MODULE_DEVICE_TABLE(of, ds2482_i2c_of_match);
+#endif // REGISTER_OF
+
 static struct i2c_driver ds2482_driver = {
 	.driver = {
 		.name	= "ds2482",
+#		if REGISTER_OF
+			.of_match_table = ds2482_i2c_of_match,
+#		endif // REGISTER_OF
 	},
 	.probe		= ds2482_probe,
 	.remove		= ds2482_remove,
