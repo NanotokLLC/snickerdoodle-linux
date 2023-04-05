@@ -687,6 +687,8 @@ source "drivers/dma/ti/Kconfig"
 
 source "drivers/dma/xilinx/Kconfig"
 
+source "drivers/dma/nanotok/Kconfig"
+
 # clients
 comment "DMA Clients"
 	depends on DMA_ENGINE
@@ -709,12 +711,6 @@ config DMATEST
 	help
 	  Simple DMA test client. Say N unless you're debugging a
 	  DMA Device driver.
-
-config DMA_CORE100
-    tristate "Core100 driver"
-    depends on DMA_ENGINE
-    help
-      "Simple DMA circular buffer for core100 FIFO(s)"
 
 config DMA_ENGINE_RAID
 	bool
