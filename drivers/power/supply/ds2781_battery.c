@@ -18,6 +18,8 @@
 #include <linux/w1.h>
 #include "../../w1/slaves/w1_ds2781.h"
 
+#define NTK_EXTENSIONS
+
 /* Current unit measurement in uA for a 1 milli-ohm sense resistor */
 #define DS2781_CURRENT_UNITS	1563
 /* Charge unit measurement in uAh for a 1 milli-ohm sense resistor */
@@ -40,6 +42,74 @@ enum current_types {
 	CURRENT_NOW,
 	CURRENT_AVG,
 };
+
+#if defined NTK_EXTENSIONS
+#	define DEFINE_BYTE_REGISTER( register ) \
+		{ \
+			.address = DS2781_ ## register, \
+			.size = 1, \
+			.name = #register \
+		}
+#	define DEFINE_SHORT_REGISTER( register ) \
+		{ \
+			.address = DS2781_ ## register ## _MSB, \
+			.size = 2, \
+			.name = #register \
+		}
+
+	struct ds2781_register {
+		unsigned char address;
+		unsigned char size;
+		const char* name;
+	};
+	
+	struct ds2781_register ds2781_registers[] =
+	{
+		DEFINE_BYTE_REGISTER( STATUS ),
+		DEFINE_BYTE_REGISTER( RARC ),
+		DEFINE_BYTE_REGISTER( RSRC ),
+		DEFINE_BYTE_REGISTER( AS ),
+		DEFINE_BYTE_REGISTER( SFR ),
+
+		DEFINE_SHORT_REGISTER( RAAC ),
+		DEFINE_SHORT_REGISTER( RSAC ),
+		DEFINE_SHORT_REGISTER( IAVG ),
+		DEFINE_SHORT_REGISTER( TEMP ),
+		DEFINE_SHORT_REGISTER( VOLT ),
+		DEFINE_SHORT_REGISTER( CURRENT ),
+		DEFINE_SHORT_REGISTER( ACR ),
+		DEFINE_SHORT_REGISTER( ACRL ),
+		DEFINE_SHORT_REGISTER( FULL ),
+		DEFINE_SHORT_REGISTER( AE ),
+		DEFINE_SHORT_REGISTER( SE ),
+		DEFINE_SHORT_REGISTER( FSGAIN ),
+		{ 0, 0, NULL }
+	};
+
+// /* Status register bits */
+// #define DS2781_STATUS_CHGTF     (1 << 7)
+// #define DS2781_STATUS_AEF       (1 << 6)
+// #define DS2781_STATUS_SEF       (1 << 5)
+// #define DS2781_STATUS_LEARNF        (1 << 4)
+// /* Bit 3 Reserved */
+// #define DS2781_STATUS_UVF       (1 << 2)
+// #define DS2781_STATUS_PORF      (1 << 1)
+// /* Bit 0 Reserved */
+
+	static LIST_HEAD(reg_files);
+
+	struct dynamic_device_attribute
+	{
+		struct device_attribute attr;
+		struct ds2781_register* pregister;
+	};
+
+	struct reg_file
+	{
+		struct dynamic_device_attribute dyn_attr;
+		struct list_head list; /* list of all fox structures */
+	};
+#endif // defined NTK_EXTENSIONS
 
 static const char model[] = "DS2781";
 static const char manufacturer[] = "Maxim/Dallas";
@@ -93,6 +163,14 @@ static inline int ds2781_write(struct ds2781_device_info *dev_info, u8 *val,
 	int addr, size_t count)
 {
 	return ds2781_battery_io(dev_info, val, addr, count, 1);
+}
+
+static inline int ds2781_write16(struct ds2781_device_info *dev_info, s16 *raw,
+	int addr )
+{
+	u8* praw = ( u8* ) raw;
+	u8 val[ 2 ] = { praw[ 1 ], praw[ 0 ] };
+	return ds2781_battery_io( dev_info, val, addr, sizeof( val ), 1 );
 }
 
 static inline int ds2781_store_eeprom(struct device *dev, int addr)
@@ -721,6 +799,28 @@ static DEVICE_ATTR(rsgain_setting, S_IRUGO | S_IWUSR, ds2781_get_rsgain_setting,
 static DEVICE_ATTR(pio_pin, S_IRUGO | S_IWUSR, ds2781_get_pio_pin,
 	ds2781_set_pio_pin);
 
+#if defined NTK_EXTENSIONS
+	static ssize_t ds2781_list_registers( struct device* dev, struct device_attribute* attr, char* buf );
+	static DEVICE_ATTR( reg_list, S_IRUGO, ds2781_list_registers, NULL );
+
+	static ssize_t ds2781_add_register( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+	static ssize_t ds2781_remove_register( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+	static DEVICE_ATTR( reg_add, S_IWUSR, NULL, ds2781_add_register );
+	static DEVICE_ATTR( reg_remove, S_IWUSR, NULL, ds2781_remove_register );
+	
+	static struct attribute *ds2781_dynamic_sysfs_attributes[] =
+	{
+		&dev_attr_reg_list.attr,
+		&dev_attr_reg_add.attr,
+		&dev_attr_reg_remove.attr,
+		NULL
+	};
+
+	static const struct attribute_group ds2781_dynamic_sysfs_group = {
+		.attrs = ds2781_dynamic_sysfs_attributes,
+	};
+#endif // defined NTK_EXTENSIONS
+
 static struct attribute *ds2781_sysfs_attrs[] = {
 	&dev_attr_pmod_enabled.attr,
 	&dev_attr_sense_resistor_value.attr,
@@ -742,6 +842,9 @@ static const struct attribute_group ds2781_sysfs_group = {
 };
 
 static const struct attribute_group *ds2781_sysfs_groups[] = {
+#	if defined NTK_EXTENSIONS
+		&ds2781_dynamic_sysfs_group,
+#	endif // defined NTK_EXTENSIONS
 	&ds2781_sysfs_group,
 	NULL,
 };
@@ -778,6 +881,156 @@ static int ds2781_battery_probe(struct platform_device *pdev)
 
 	return 0;
 }
+
+#if defined NTK_EXTENSIONS
+	static int ds2781_find_register( const char* register_name, size_t register_name_length )
+	{
+		int index = 0;
+		const struct ds2781_register* pregister;
+		register_name_length -= 1;	// account for the newline
+		for ( pregister = &ds2781_registers[ index ]; pregister->name != NULL; ++pregister, ++index )
+		{
+			const size_t name_length = strlen( pregister->name );
+			if ( name_length == register_name_length )
+			{
+				int result = strncasecmp( register_name, pregister->name, name_length );
+				if ( 0 == result )
+				{
+					return index;
+				}
+			}
+		}
+		return -1;
+	}
+
+	static ssize_t ds2781_list_registers( struct device* dev, struct device_attribute* attr, char* buf )
+	{
+		ssize_t offset = 0;
+		int index = 0;
+		const struct ds2781_register* pregister;
+		for ( pregister = &ds2781_registers[ index ]; pregister->name != NULL; ++pregister, ++index )
+		{
+			offset += scnprintf( buf + offset, PAGE_SIZE - offset, "%s ", pregister->name );
+		}
+		offset += scnprintf( buf + offset, PAGE_SIZE - offset, "\n" );
+		return offset;
+	}
+
+	/*
+	 * We need to know what field we're dealing with. I think the only way this can be done
+	 * is by introspection of the file name by which these functions were called.
+	 */
+	static ssize_t ds2781_read_register( struct device* dev, struct device_attribute* attr, char* buf )
+	{
+		struct power_supply *psy = to_power_supply(dev);
+		struct ds2781_device_info *dev_info = to_ds2781_device_info( psy );
+		struct dynamic_device_attribute* pdyn_attr = ( struct dynamic_device_attribute* ) attr;
+		ssize_t ret = 0;
+		int value = 0;
+		const char* pformat = NULL;
+		if ( 1 == pdyn_attr->pregister->size )
+		{
+			u8 u8value = 0;
+			ret = ds2781_read8( dev_info, &u8value, pdyn_attr->pregister->address );
+			value = ( int ) u8value;
+			pformat = "%u\n";
+		}
+		else
+		{
+			s16 s16value = 0;
+			ret = ds2781_read16( dev_info, &s16value, pdyn_attr->pregister->address );
+			value = ( int ) s16value;
+			pformat = "%d\n";
+		}
+		if ( ret < 0 ) {
+			dev_err( dev_info->dev, "Cannot read register %s\n", pdyn_attr->pregister->name );
+			return ret;
+		}
+		ret = scnprintf( buf, PAGE_SIZE, pformat, value );
+		return ret;
+	}
+
+	static ssize_t ds2781_write_register( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *psy = to_power_supply( dev );
+		struct ds2781_device_info *dev_info = to_ds2781_device_info( psy );
+		struct dynamic_device_attribute* pdyn_attr = ( struct dynamic_device_attribute* ) attr;
+		ssize_t ret;
+		if ( 1 == pdyn_attr->pregister->size )
+		{
+			u8 value;
+			ret = kstrtou8( buf, 0, &value );
+			if (ret < 0)
+				return ret;
+			ret = ds2781_write( dev_info, &value, pdyn_attr->pregister->address, pdyn_attr->pregister->size );
+		}
+		else
+		{
+			s16 value;
+			ret = kstrtos16( buf, 0, &value );
+			if (ret < 0)
+				return ret;
+			ret = ds2781_write16( dev_info, &value, pdyn_attr->pregister->address );
+		}
+		if ( ret < 0 )
+		{
+			dev_err( dev_info->dev, "Cannot write register %s\n", pdyn_attr->pregister->name );
+			return ret;
+		}
+		return count;
+	}
+
+	static ssize_t ds2781_add_register( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *psy = to_power_supply( dev );
+		struct ds2781_device_info *dev_info = to_ds2781_device_info( psy );
+		struct reg_file* preg_file;
+		int ret;
+		int index = ds2781_find_register( buf, count );
+		if ( index < 0 )
+		{
+			ret = -EINVAL;
+			goto exit;
+		}
+		preg_file = kmalloc( sizeof( struct reg_file ), GFP_KERNEL );
+		preg_file->dyn_attr.pregister = &ds2781_registers[ index ];
+		preg_file->dyn_attr.attr.attr.name = preg_file->dyn_attr.pregister->name;
+		preg_file->dyn_attr.attr.attr.mode = S_IWUSR | S_IRUGO;
+		preg_file->dyn_attr.attr.show = ds2781_read_register;
+		preg_file->dyn_attr.attr.store = ds2781_write_register;
+		ret = device_create_file( &psy->dev, &preg_file->dyn_attr.attr );
+		if ( ret != 0 )
+		{
+			kfree( preg_file );
+			dev_err( dev_info->dev, "failed to create %s sysfs entry\n", preg_file->dyn_attr.pregister->name );
+			goto exit;
+		}
+		list_add( &preg_file->list, &reg_files  );
+		ret = ( int ) count;
+	exit:
+		return ( ssize_t ) ret;
+	}
+
+	static ssize_t ds2781_remove_register( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *psy = to_power_supply( dev );
+		//struct ds2781_device_info *dev_info = to_ds2781_device_info( psy );
+		int ret = ( int ) count;
+		struct reg_file* preg_file;
+		list_for_each_entry( preg_file, &reg_files, list )
+		{
+			int compare = strncmp( preg_file->dyn_attr.pregister->name, buf, count - 1 );
+			if ( 0 == compare )
+			{
+				device_remove_file( &psy->dev, &preg_file->dyn_attr.attr );
+				list_del( &preg_file->list );
+				kfree( preg_file );
+				break;
+			}
+		}
+		return ( ssize_t ) ret;
+	}
+#endif // defined NTK_EXTENSIONS
 
 static struct platform_driver ds2781_battery_driver = {
 	.driver = {
