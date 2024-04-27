@@ -15966,6 +15966,14 @@ static struct sk_buff *cfg80211_prepare_cqm(struct net_device *dev,
 	struct sk_buff *msg = nlmsg_new(NLMSG_DEFAULT_SIZE, gfp);
 	void **cb;
 
+	/*2024.04.26:NEB: a bug according to TI*/
+	if ( !rdev )
+	{
+		pr_err_ratelimited( "NULL rdev in cfg80211_prepare_cqm" );
+		return NULL;
+	}
+	/*2024.04.26:NEB: to here*/
+
 	if (!msg)
 		return NULL;
 
