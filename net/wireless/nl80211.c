@@ -16027,21 +16027,32 @@ void cfg80211_cqm_rssi_notify(struct net_device *dev,
 	struct cfg80211_registered_device *rdev = NULL;
 
 	/*2024.04.26:NEB: a bug according to TI*/
+	bool bAbort = false;
 	if ( NULL == dev )
 	{
 		pr_err_ratelimited( "NULL dev in cfg80211_cqm_rssi_notify" );
-		return;
+		bAbort = true;
 	}
-	wdev = dev->ieee80211_ptr;
-	if ( NULL == wdev )
+	else
 	{
-		pr_err_ratelimited( "NULL wdev in cfg80211_cqm_rssi_notify" );
-		return;
+		wdev = dev->ieee80211_ptr;
+		if ( NULL == wdev )
+		{
+			pr_err_ratelimited( "NULL wdev in cfg80211_cqm_rssi_notify" );
+			bAbort = true;
+		}
+		else
+		{
+			rdev = wiphy_to_rdev(wdev->wiphy);
+			if ( NULL == rdev )
+			{
+				pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
+				bAbort = true;
+			}
+		}
 	}
-	rdev = wiphy_to_rdev(wdev->wiphy);
-	if ( !rdev )
+	if ( bAbort )
 	{
-		pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
 		return;
 	}
 	/*2024.04.26:NEB: to here*/
