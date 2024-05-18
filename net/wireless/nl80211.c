@@ -16026,6 +16026,14 @@ void cfg80211_cqm_rssi_notify(struct net_device *dev,
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
 
+	/*2024.04.26:NEB: a bug according to TI*/
+	if ( !rdev )
+	{
+		pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
+		return NULL;
+	}
+	/*2024.04.26:NEB: to here*/
+
 	trace_cfg80211_cqm_rssi_notify(dev, rssi_event, rssi_level);
 
 	if (WARN_ON(rssi_event != NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW &&
