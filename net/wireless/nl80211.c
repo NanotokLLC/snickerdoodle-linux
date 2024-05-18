@@ -16024,7 +16024,7 @@ void cfg80211_cqm_rssi_notify(struct net_device *dev,
 {
 	struct sk_buff *msg;
 	struct wireless_dev *wdev = NULL;
-	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
+	struct cfg80211_registered_device *rdev = NULL;
 
 	/*2024.04.26:NEB: a bug according to TI*/
 	if ( NULL == dev )
@@ -16038,6 +16038,7 @@ void cfg80211_cqm_rssi_notify(struct net_device *dev,
 		pr_err_ratelimited( "NULL wdev in cfg80211_cqm_rssi_notify" );
 		return;
 	}
+	rdev = wiphy_to_rdev(wdev->wiphy);
 	if ( !rdev )
 	{
 		pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
