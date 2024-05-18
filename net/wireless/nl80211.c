@@ -16030,7 +16030,7 @@ void cfg80211_cqm_rssi_notify(struct net_device *dev,
 	if ( !rdev )
 	{
 		pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
-		return NULL;
+		return;
 	}
 	/*2024.04.26:NEB: to here*/
 
