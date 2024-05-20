@@ -15966,14 +15966,6 @@ static struct sk_buff *cfg80211_prepare_cqm(struct net_device *dev,
 	struct sk_buff *msg = nlmsg_new(NLMSG_DEFAULT_SIZE, gfp);
 	void **cb;
 
-	/*2024.04.26:NEB: a bug according to TI*/
-	if ( !rdev )
-	{
-		pr_err_ratelimited( "NULL rdev in cfg80211_prepare_cqm" );
-		return NULL;
-	}
-	/*2024.04.26:NEB: to here*/
-
 	if (!msg)
 		return NULL;
 
@@ -16022,41 +16014,29 @@ void cfg80211_cqm_rssi_notify(struct net_device *dev,
 			      enum nl80211_cqm_rssi_threshold_event rssi_event,
 			      s32 rssi_level, gfp_t gfp)
 {
-	struct sk_buff *msg;
+	struct sk_buff *msg = NULL;
 	struct wireless_dev *wdev = NULL;
 	struct cfg80211_registered_device *rdev = NULL;
 
 	/*2024.04.26:NEB: a bug according to TI*/
-	bool bAbort = false;
 	if ( NULL == dev )
 	{
 		pr_err_ratelimited( "NULL dev in cfg80211_cqm_rssi_notify" );
-		bAbort = true;
+		return;
 	}
-	else
+	wdev = dev->ieee80211_ptr;
+	if ( NULL == wdev )
 	{
-		wdev = dev->ieee80211_ptr;
-		if ( NULL == wdev )
-		{
-			pr_err_ratelimited( "NULL wdev in cfg80211_cqm_rssi_notify" );
-			bAbort = true;
-		}
-		else
-		{
-			rdev = wiphy_to_rdev(wdev->wiphy);
-			if ( NULL == rdev )
-			{
-				pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
-				bAbort = true;
-			}
-		}
+		pr_err_ratelimited( "NULL wdev in cfg80211_cqm_rssi_notify" );
+		return;
 	}
-	if ( bAbort )
+	rdev = wiphy_to_rdev(wdev->wiphy);
+	if ( NULL == rdev )
 	{
+		pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
 		return;
 	}
 	/*2024.04.26:NEB: to here*/
-
 	trace_cfg80211_cqm_rssi_notify(dev, rssi_event, rssi_level);
 
 	if (WARN_ON(rssi_event != NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW &&
