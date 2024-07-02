@@ -31,6 +31,9 @@
 #define PUMP_EXPRESS_MAX_TRIES		6
 #define PUMP_EXPRESS_VBUS_MARGIN_uV	1000000
 
+// #define NEB_DEBUG
+#define NTK_EXTENSIONS
+
 enum bq25890_chip_version {
 	BQ25890,
 	BQ25892,
@@ -130,9 +133,42 @@ struct bq25890_device {
 	enum bq25890_chip_version chip_version;
 	struct bq25890_init_data init_data;
 	struct bq25890_state state;
-
+#	if defined NEB_DEBUG
+		enum bq25890_fields current_field;
+#	endif // defined NEB_DEBUG
 	struct mutex lock; /* protect state data */
 };
+
+#if defined NEB_DEBUG || defined NTK_EXTENSIONS
+	struct ntk_reg_field {
+		struct reg_field reg_field;
+		const char* name;
+	};
+#	define DEFINE_FIELD( _reg, _lsb, _msb, _name )	\
+		[F_ ## _name] = { 	\
+		{ .reg = _reg,		\
+		.lsb = _lsb,		\
+		.msb = _msb, },		\
+		.name = #_name }
+#else
+	typedef struct reg_field ntk_reg_field;
+#endif // defined NEB_DEBUG || defined NTK_EXTENSIONS
+
+#if defined NTK_EXTENSIONS
+	static LIST_HEAD(reg_files);
+
+	struct dynamic_device_attribute
+	{
+		struct device_attribute attr;
+		enum bq25890_fields field_id;
+	};
+	
+	struct reg_file {
+		const struct ntk_reg_field* pfield;
+		struct dynamic_device_attribute dyn_attr;
+	    struct list_head list; /* list of all fox structures */
+	};
+#endif // defined NTK_EXTENSIONS
 
 static DEFINE_IDR(bq25890_id);
 static DEFINE_MUTEX(bq25890_id_mutex);
@@ -170,103 +206,201 @@ static const struct regmap_config bq25890_regmap_config = {
 	.volatile_table = &bq25890_volatile_regs,
 };
 
-static const struct reg_field bq25890_reg_fields[] = {
-	/* REG00 */
-	[F_EN_HIZ]		= REG_FIELD(0x00, 7, 7),
-	[F_EN_ILIM]		= REG_FIELD(0x00, 6, 6),
-	[F_IINLIM]		= REG_FIELD(0x00, 0, 5),
-	/* REG01 */
-	[F_BHOT]		= REG_FIELD(0x01, 6, 7),
-	[F_BCOLD]		= REG_FIELD(0x01, 5, 5),
-	[F_VINDPM_OFS]		= REG_FIELD(0x01, 0, 4),
-	/* REG02 */
-	[F_CONV_START]		= REG_FIELD(0x02, 7, 7),
-	[F_CONV_RATE]		= REG_FIELD(0x02, 6, 6),
-	[F_BOOSTF]		= REG_FIELD(0x02, 5, 5),
-	[F_ICO_EN]		= REG_FIELD(0x02, 4, 4),
-	[F_HVDCP_EN]		= REG_FIELD(0x02, 3, 3),  // reserved on BQ25896
-	[F_MAXC_EN]		= REG_FIELD(0x02, 2, 2),  // reserved on BQ25896
-	[F_FORCE_DPM]		= REG_FIELD(0x02, 1, 1),
-	[F_AUTO_DPDM_EN]	= REG_FIELD(0x02, 0, 0),
-	/* REG03 */
-	[F_BAT_LOAD_EN]		= REG_FIELD(0x03, 7, 7),
-	[F_WD_RST]		= REG_FIELD(0x03, 6, 6),
-	[F_OTG_CFG]		= REG_FIELD(0x03, 5, 5),
-	[F_CHG_CFG]		= REG_FIELD(0x03, 4, 4),
-	[F_SYSVMIN]		= REG_FIELD(0x03, 1, 3),
-	[F_MIN_VBAT_SEL]	= REG_FIELD(0x03, 0, 0), // BQ25896 only
-	/* REG04 */
-	[F_PUMPX_EN]		= REG_FIELD(0x04, 7, 7),
-	[F_ICHG]		= REG_FIELD(0x04, 0, 6),
-	/* REG05 */
-	[F_IPRECHG]		= REG_FIELD(0x05, 4, 7),
-	[F_ITERM]		= REG_FIELD(0x05, 0, 3),
-	/* REG06 */
-	[F_VREG]		= REG_FIELD(0x06, 2, 7),
-	[F_BATLOWV]		= REG_FIELD(0x06, 1, 1),
-	[F_VRECHG]		= REG_FIELD(0x06, 0, 0),
-	/* REG07 */
-	[F_TERM_EN]		= REG_FIELD(0x07, 7, 7),
-	[F_STAT_DIS]		= REG_FIELD(0x07, 6, 6),
-	[F_WD]			= REG_FIELD(0x07, 4, 5),
-	[F_TMR_EN]		= REG_FIELD(0x07, 3, 3),
-	[F_CHG_TMR]		= REG_FIELD(0x07, 1, 2),
-	[F_JEITA_ISET]		= REG_FIELD(0x07, 0, 0), // reserved on BQ25895
-	/* REG08 */
-	[F_BATCMP]		= REG_FIELD(0x08, 5, 7),
-	[F_VCLAMP]		= REG_FIELD(0x08, 2, 4),
-	[F_TREG]		= REG_FIELD(0x08, 0, 1),
-	/* REG09 */
-	[F_FORCE_ICO]		= REG_FIELD(0x09, 7, 7),
-	[F_TMR2X_EN]		= REG_FIELD(0x09, 6, 6),
-	[F_BATFET_DIS]		= REG_FIELD(0x09, 5, 5),
-	[F_JEITA_VSET]		= REG_FIELD(0x09, 4, 4), // reserved on BQ25895
-	[F_BATFET_DLY]		= REG_FIELD(0x09, 3, 3),
-	[F_BATFET_RST_EN]	= REG_FIELD(0x09, 2, 2),
-	[F_PUMPX_UP]		= REG_FIELD(0x09, 1, 1),
-	[F_PUMPX_DN]		= REG_FIELD(0x09, 0, 0),
-	/* REG0A */
-	[F_BOOSTV]		= REG_FIELD(0x0A, 4, 7),
-	[F_BOOSTI]		= REG_FIELD(0x0A, 0, 2), // reserved on BQ25895
-	[F_PFM_OTG_DIS]		= REG_FIELD(0x0A, 3, 3), // BQ25896 only
-	/* REG0B */
-	[F_VBUS_STAT]		= REG_FIELD(0x0B, 5, 7),
-	[F_CHG_STAT]		= REG_FIELD(0x0B, 3, 4),
-	[F_PG_STAT]		= REG_FIELD(0x0B, 2, 2),
-	[F_SDP_STAT]		= REG_FIELD(0x0B, 1, 1), // reserved on BQ25896
-	[F_VSYS_STAT]		= REG_FIELD(0x0B, 0, 0),
-	/* REG0C */
-	[F_WD_FAULT]		= REG_FIELD(0x0C, 7, 7),
-	[F_BOOST_FAULT]		= REG_FIELD(0x0C, 6, 6),
-	[F_CHG_FAULT]		= REG_FIELD(0x0C, 4, 5),
-	[F_BAT_FAULT]		= REG_FIELD(0x0C, 3, 3),
-	[F_NTC_FAULT]		= REG_FIELD(0x0C, 0, 2),
-	/* REG0D */
-	[F_FORCE_VINDPM]	= REG_FIELD(0x0D, 7, 7),
-	[F_VINDPM]		= REG_FIELD(0x0D, 0, 6),
-	/* REG0E */
-	[F_THERM_STAT]		= REG_FIELD(0x0E, 7, 7),
-	[F_BATV]		= REG_FIELD(0x0E, 0, 6),
-	/* REG0F */
-	[F_SYSV]		= REG_FIELD(0x0F, 0, 6),
-	/* REG10 */
-	[F_TSPCT]		= REG_FIELD(0x10, 0, 6),
-	/* REG11 */
-	[F_VBUS_GD]		= REG_FIELD(0x11, 7, 7),
-	[F_VBUSV]		= REG_FIELD(0x11, 0, 6),
-	/* REG12 */
-	[F_ICHGR]		= REG_FIELD(0x12, 0, 6),
-	/* REG13 */
-	[F_VDPM_STAT]		= REG_FIELD(0x13, 7, 7),
-	[F_IDPM_STAT]		= REG_FIELD(0x13, 6, 6),
-	[F_IDPM_LIM]		= REG_FIELD(0x13, 0, 5),
-	/* REG14 */
-	[F_REG_RST]		= REG_FIELD(0x14, 7, 7),
-	[F_ICO_OPTIMIZED]	= REG_FIELD(0x14, 6, 6),
-	[F_PN]			= REG_FIELD(0x14, 3, 5),
-	[F_TS_PROFILE]		= REG_FIELD(0x14, 2, 2),
-	[F_DEV_REV]		= REG_FIELD(0x14, 0, 1)
-};
+#if defined NTK_EXTENSIONS
+	static const struct ntk_reg_field bq25890_reg_fields[] = {
+		/* REG00 */
+		DEFINE_FIELD( 0x00, 7, 7, EN_HIZ),
+		DEFINE_FIELD( 0x00, 6, 6, EN_ILIM ),
+		DEFINE_FIELD( 0x00, 0, 5, IINLIM ),
+		/* REG01 */
+		DEFINE_FIELD( 0x01, 6, 7, BHOT ),
+		DEFINE_FIELD( 0x01, 5, 5, BCOLD ),
+		DEFINE_FIELD( 0x01, 0, 4, VINDPM_OFS ),
+		/* REG02 */
+		DEFINE_FIELD( 0x02, 7, 7, CONV_START ),
+		DEFINE_FIELD( 0x02, 6, 6, CONV_RATE ),
+		DEFINE_FIELD( 0x02, 5, 5, BOOSTF ),
+		DEFINE_FIELD( 0x02, 4, 4, ICO_EN ),
+		DEFINE_FIELD( 0x02, 3, 3, HVDCP_EN ),
+		DEFINE_FIELD( 0x02, 2, 2, MAXC_EN ),
+		DEFINE_FIELD( 0x02, 1, 1, FORCE_DPM ),
+		DEFINE_FIELD( 0x02, 0, 0, AUTO_DPDM_EN ),
+		/* REG03 */
+		DEFINE_FIELD( 0x03, 7, 7, BAT_LOAD_EN ),
+		DEFINE_FIELD( 0x03, 6, 6, WD_RST ),
+		DEFINE_FIELD( 0x03, 5, 5, OTG_CFG ),
+		DEFINE_FIELD( 0x03, 4, 4, CHG_CFG ),
+		DEFINE_FIELD( 0x03, 1, 3, SYSVMIN ),
+		/* REG04 */
+		DEFINE_FIELD( 0x04, 7, 7, PUMPX_EN ),
+		DEFINE_FIELD( 0x04, 0, 6, ICHG ),
+		/* REG05 */
+		DEFINE_FIELD( 0x05, 4, 7, IPRECHG ),
+		DEFINE_FIELD( 0x05, 0, 3, ITERM ),
+		/* REG06 */
+		DEFINE_FIELD( 0x06, 2, 7, VREG ),
+		DEFINE_FIELD( 0x06, 1, 1, BATLOWV ),
+		DEFINE_FIELD( 0x06, 0, 0, VRECHG ),
+		/* REG07 */
+		DEFINE_FIELD( 0x07, 7, 7, TERM_EN ),
+		DEFINE_FIELD( 0x07, 6, 6, STAT_DIS ),
+		DEFINE_FIELD( 0x07, 4, 5, WD ),
+		DEFINE_FIELD( 0x07, 3, 3, TMR_EN ),
+		DEFINE_FIELD( 0x07, 1, 2, CHG_TMR ),
+		DEFINE_FIELD( 0x07, 0, 0, JEITA_ISET ),
+		/* REG08 */
+		DEFINE_FIELD( 0x08, 6, 7, BATCMP ),
+		DEFINE_FIELD( 0x08, 2, 4, VCLAMP ),
+		DEFINE_FIELD( 0x08, 0, 1, TREG ),
+		/* REG09 */
+		DEFINE_FIELD( 0x09, 7, 7, FORCE_ICO ),
+		DEFINE_FIELD( 0x09, 6, 6, TMR2X_EN ),
+		DEFINE_FIELD( 0x09, 5, 5, BATFET_DIS ),
+		DEFINE_FIELD( 0x09, 4, 4, JEITA_VSET ),
+		DEFINE_FIELD( 0x09, 3, 3, BATFET_DLY ),
+		DEFINE_FIELD( 0x09, 2, 2, BATFET_RST_EN ),
+		DEFINE_FIELD( 0x09, 1, 1, PUMPX_UP ),
+		DEFINE_FIELD( 0x09, 0, 0, PUMPX_DN ),
+		/* REG0A */
+		DEFINE_FIELD( 0x0A, 4, 7, BOOSTV ),
+		DEFINE_FIELD( 0x0A, 0, 2, BOOSTI ),
+		/* REG0B */
+		DEFINE_FIELD( 0x0B, 5, 7, VBUS_STAT ),
+		DEFINE_FIELD( 0x0B, 3, 4, CHG_STAT ),
+		DEFINE_FIELD( 0x0B, 2, 2, PG_STAT ),
+		DEFINE_FIELD( 0x0B, 1, 1, SDP_STAT ),
+		DEFINE_FIELD( 0x0B, 0, 0, VSYS_STAT ),
+		/* REG0C */
+		DEFINE_FIELD( 0x0C, 7, 7, WD_FAULT ),
+		DEFINE_FIELD( 0x0C, 6, 6, BOOST_FAULT ),
+		DEFINE_FIELD( 0x0C, 4, 5, CHG_FAULT ),
+		DEFINE_FIELD( 0x0C, 3, 3, BAT_FAULT ),
+		DEFINE_FIELD( 0x0C, 0, 2, NTC_FAULT ),
+		/* REG0D */
+		DEFINE_FIELD( 0x0D, 7, 7, FORCE_VINDPM ),
+		DEFINE_FIELD( 0x0D, 0, 6, VINDPM ),
+		/* REG0E */
+		DEFINE_FIELD( 0x0E, 7, 7, THERM_STAT ),
+		DEFINE_FIELD( 0x0E, 0, 6, BATV ),
+		/* REG0F */
+		DEFINE_FIELD( 0x0F, 0, 6, SYSV ),
+		/* REG10 */
+		DEFINE_FIELD( 0x10, 0, 6, TSPCT ),
+		/* REG11 */
+		DEFINE_FIELD( 0x11, 7, 7, VBUS_GD ),
+		DEFINE_FIELD( 0x11, 0, 6, VBUSV ),
+		/* REG12 */
+		DEFINE_FIELD( 0x12, 0, 6, ICHGR ),
+		/* REG13 */
+		DEFINE_FIELD( 0x13, 7, 7, VDPM_STAT ),
+		DEFINE_FIELD( 0x13, 6, 6, IDPM_STAT ),
+		DEFINE_FIELD( 0x13, 0, 5, IDPM_LIM ),
+		/* REG14 */
+		DEFINE_FIELD( 0x14, 7, 7, REG_RST ),
+		DEFINE_FIELD( 0x14, 6, 6, ICO_OPTIMIZED ),
+		DEFINE_FIELD( 0x14, 3, 5, PN ),
+		DEFINE_FIELD( 0x14, 2, 2, TS_PROFILE ),
+		DEFINE_FIELD( 0x14, 0, 1, DEV_REV )
+	};
+#else // defined NTK_EXTENSIONS
+	static const struct reg_field bq25890_reg_fields[] = {
+		/* REG00 */
+		[F_EN_HIZ]		= REG_FIELD(0x00, 7, 7),
+		[F_EN_ILIM]		= REG_FIELD(0x00, 6, 6),
+		[F_IINLIM]		= REG_FIELD(0x00, 0, 5),
+		/* REG01 */
+		[F_BHOT]		= REG_FIELD(0x01, 6, 7),
+		[F_BCOLD]		= REG_FIELD(0x01, 5, 5),
+		[F_VINDPM_OFS]		= REG_FIELD(0x01, 0, 4),
+		/* REG02 */
+		[F_CONV_START]		= REG_FIELD(0x02, 7, 7),
+		[F_CONV_RATE]		= REG_FIELD(0x02, 6, 6),
+		[F_BOOSTF]		= REG_FIELD(0x02, 5, 5),
+		[F_ICO_EN]		= REG_FIELD(0x02, 4, 4),
+		[F_HVDCP_EN]		= REG_FIELD(0x02, 3, 3),  // reserved on BQ25896
+		[F_MAXC_EN]		= REG_FIELD(0x02, 2, 2),  // reserved on BQ25896
+		[F_FORCE_DPM]		= REG_FIELD(0x02, 1, 1),
+		[F_AUTO_DPDM_EN]	= REG_FIELD(0x02, 0, 0),
+		/* REG03 */
+		[F_BAT_LOAD_EN]		= REG_FIELD(0x03, 7, 7),
+		[F_WD_RST]		= REG_FIELD(0x03, 6, 6),
+		[F_OTG_CFG]		= REG_FIELD(0x03, 5, 5),
+		[F_CHG_CFG]		= REG_FIELD(0x03, 4, 4),
+		[F_SYSVMIN]		= REG_FIELD(0x03, 1, 3),
+		[F_MIN_VBAT_SEL]	= REG_FIELD(0x03, 0, 0), // BQ25896 only
+		/* REG04 */
+		[F_PUMPX_EN]		= REG_FIELD(0x04, 7, 7),
+		[F_ICHG]		= REG_FIELD(0x04, 0, 6),
+		/* REG05 */
+		[F_IPRECHG]		= REG_FIELD(0x05, 4, 7),
+		[F_ITERM]		= REG_FIELD(0x05, 0, 3),
+		/* REG06 */
+		[F_VREG]		= REG_FIELD(0x06, 2, 7),
+		[F_BATLOWV]		= REG_FIELD(0x06, 1, 1),
+		[F_VRECHG]		= REG_FIELD(0x06, 0, 0),
+		/* REG07 */
+		[F_TERM_EN]		= REG_FIELD(0x07, 7, 7),
+		[F_STAT_DIS]		= REG_FIELD(0x07, 6, 6),
+		[F_WD]			= REG_FIELD(0x07, 4, 5),
+		[F_TMR_EN]		= REG_FIELD(0x07, 3, 3),
+		[F_CHG_TMR]		= REG_FIELD(0x07, 1, 2),
+		[F_JEITA_ISET]		= REG_FIELD(0x07, 0, 0), // reserved on BQ25895
+		/* REG08 */
+		[F_BATCMP]		= REG_FIELD(0x08, 5, 7),
+		[F_VCLAMP]		= REG_FIELD(0x08, 2, 4),
+		[F_TREG]		= REG_FIELD(0x08, 0, 1),
+		/* REG09 */
+		[F_FORCE_ICO]		= REG_FIELD(0x09, 7, 7),
+		[F_TMR2X_EN]		= REG_FIELD(0x09, 6, 6),
+		[F_BATFET_DIS]		= REG_FIELD(0x09, 5, 5),
+		[F_JEITA_VSET]		= REG_FIELD(0x09, 4, 4), // reserved on BQ25895
+		[F_BATFET_DLY]		= REG_FIELD(0x09, 3, 3),
+		[F_BATFET_RST_EN]	= REG_FIELD(0x09, 2, 2),
+		[F_PUMPX_UP]		= REG_FIELD(0x09, 1, 1),
+		[F_PUMPX_DN]		= REG_FIELD(0x09, 0, 0),
+		/* REG0A */
+		[F_BOOSTV]		= REG_FIELD(0x0A, 4, 7),
+		[F_BOOSTI]		= REG_FIELD(0x0A, 0, 2), // reserved on BQ25895
+		[F_PFM_OTG_DIS]		= REG_FIELD(0x0A, 3, 3), // BQ25896 only
+		/* REG0B */
+		[F_VBUS_STAT]		= REG_FIELD(0x0B, 5, 7),
+		[F_CHG_STAT]		= REG_FIELD(0x0B, 3, 4),
+		[F_PG_STAT]		= REG_FIELD(0x0B, 2, 2),
+		[F_SDP_STAT]		= REG_FIELD(0x0B, 1, 1), // reserved on BQ25896
+		[F_VSYS_STAT]		= REG_FIELD(0x0B, 0, 0),
+		/* REG0C */
+		[F_WD_FAULT]		= REG_FIELD(0x0C, 7, 7),
+		[F_BOOST_FAULT]		= REG_FIELD(0x0C, 6, 6),
+		[F_CHG_FAULT]		= REG_FIELD(0x0C, 4, 5),
+		[F_BAT_FAULT]		= REG_FIELD(0x0C, 3, 3),
+		[F_NTC_FAULT]		= REG_FIELD(0x0C, 0, 2),
+		/* REG0D */
+		[F_FORCE_VINDPM]	= REG_FIELD(0x0D, 7, 7),
+		[F_VINDPM]		= REG_FIELD(0x0D, 0, 6),
+		/* REG0E */
+		[F_THERM_STAT]		= REG_FIELD(0x0E, 7, 7),
+		[F_BATV]		= REG_FIELD(0x0E, 0, 6),
+		/* REG0F */
+		[F_SYSV]		= REG_FIELD(0x0F, 0, 6),
+		/* REG10 */
+		[F_TSPCT]		= REG_FIELD(0x10, 0, 6),
+		/* REG11 */
+		[F_VBUS_GD]		= REG_FIELD(0x11, 7, 7),
+		[F_VBUSV]		= REG_FIELD(0x11, 0, 6),
+		/* REG12 */
+		[F_ICHGR]		= REG_FIELD(0x12, 0, 6),
+		/* REG13 */
+		[F_VDPM_STAT]		= REG_FIELD(0x13, 7, 7),
+		[F_IDPM_STAT]		= REG_FIELD(0x13, 6, 6),
+		[F_IDPM_LIM]		= REG_FIELD(0x13, 0, 5),
+		/* REG14 */
+		[F_REG_RST]		= REG_FIELD(0x14, 7, 7),
+		[F_ICO_OPTIMIZED]	= REG_FIELD(0x14, 6, 6),
+		[F_PN]			= REG_FIELD(0x14, 3, 5),
+		[F_TS_PROFILE]		= REG_FIELD(0x14, 2, 2),
+		[F_DEV_REV]		= REG_FIELD(0x14, 0, 1)
+	};
+#endif // defined NTK_EXTENSIONS
 
 /*
  * Most of the val -> idx conversions can be computed, given the minimum,
@@ -1447,11 +1581,33 @@ static void bq25890_non_devm_cleanup(void *data)
 	}
 }
 
+#if defined NEB_DEBUG || defined NTK_EXTENSIONS
+	static ssize_t bq25890_read_field( struct device* dev, struct device_attribute* attr, char* buf );
+	static ssize_t bq25890_write_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+	static ssize_t bq25890_list_fields( struct device* dev, struct device_attribute* attr, char* buf );
+	static DEVICE_ATTR( reg_list, S_IRUGO, bq25890_list_fields, NULL );
+#endif // defined NEB_DEBUG || defined NTK_EXTENSIONS
+#if defined NTK_EXTENSIONS
+	static ssize_t bq25890_add_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+	static ssize_t bq25890_remove_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+	static DEVICE_ATTR( reg_add, S_IWUSR, NULL, bq25890_add_field );
+	static DEVICE_ATTR( reg_remove, S_IWUSR, NULL, bq25890_remove_field );
+#endif // defined NTK_EXTENSIONS
+#if defined NEB_DEBUG
+	static ssize_t bq25890_get_field( struct device* dev, struct device_attribute* attr, char* buf );
+	static ssize_t bq25890_set_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+	static DEVICE_ATTR( reg_select, S_IWUSR | S_IRUGO, bq25890_get_field, bq25890_set_field );
+	static DEVICE_ATTR( reg_access, S_IWUSR | S_IRUGO, bq25890_read_field, bq25890_write_field );
+#endif // defined NEB_DEBUG
+
 static int bq25890_probe(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct bq25890_device *bq;
 	int ret;
+#	if defined NTK_EXTENSIONS
+		int i;
+#	endif // defined NTK_EXTENSIONS
 
 	bq = devm_kzalloc(dev, sizeof(*bq), GFP_KERNEL);
 	if (!bq)
@@ -1469,8 +1625,22 @@ static int bq25890_probe(struct i2c_client *client)
 		return dev_err_probe(dev, PTR_ERR(bq->rmap),
 				     "failed to allocate register map\n");
 
-	ret = devm_regmap_field_bulk_alloc(dev, bq->rmap, bq->rmap_fields,
-					   bq25890_reg_fields, F_MAX_FIELDS);
+#	if defined NTK_EXTENSIONS
+		for (i = 0; i < ARRAY_SIZE(bq25890_reg_fields); i++) {
+			const struct ntk_reg_field *reg_fields = bq25890_reg_fields;
+
+			bq->rmap_fields[i] = devm_regmap_field_alloc(dev, bq->rmap,
+									 reg_fields[i].reg_field);
+			if (IS_ERR(bq->rmap_fields[i])) {
+				dev_err(dev, "cannot allocate regmap field\n");
+				ret = -ENOMEM;
+				break;
+			}
+		}
+#	else // defined NTK_EXTENSIONS
+		ret = devm_regmap_field_bulk_alloc(dev, bq->rmap, bq->rmap_fields,
+						   bq25890_reg_fields, F_MAX_FIELDS);
+#	endif // defined NTK_EXTENSIONS
 	if (ret)
 		return ret;
 
@@ -1523,6 +1693,7 @@ static int bq25890_probe(struct i2c_client *client)
 					bq25890_irq_handler_thread,
 					IRQF_TRIGGER_FALLING | IRQF_ONESHOT,
 					BQ25890_IRQ_PIN, bq);
+
 	if (ret)
 		return ret;
 
@@ -1532,7 +1703,39 @@ static int bq25890_probe(struct i2c_client *client)
 		usb_register_notifier(bq->usb_phy, &bq->usb_nb);
 	}
 
-	return 0;
+#	if defined NEB_DEBUG || defined NTK_EXTENSIONS
+		ret = device_create_file( &bq->charger->dev, &dev_attr_reg_list );
+		if ( ret ){
+			dev_err( dev, "failed to create reg_list sysfs entry.\n" );
+			return ret;
+		}
+#	endif // defined NEB_DEBUG || defined NTK_EXTENSIONS
+#	if defined NTK_EXTENSIONS
+		ret = device_create_file( &bq->charger->dev, &dev_attr_reg_add );
+		if ( ret ){
+			dev_err( dev, "failed to create reg_add sysfs entry.\n" );
+			return ret;
+		}
+		ret = device_create_file( &bq->charger->dev, &dev_attr_reg_remove );
+		if ( ret ){
+			dev_err( dev, "failed to create reg_remove sysfs entry.\n" );
+			return ret;
+		}
+#	endif // defined NTK_EXTENSIONS
+#	if defined NEB_DEBUG
+		ret = device_create_file( &bq->charger->dev, &dev_attr_reg_select );
+		if ( ret ){
+			dev_err( dev, "failed to create reg_select sysfs entry.\n" );
+			return ret;
+		}
+		ret = device_create_file( &bq->charger->dev, &dev_attr_reg_access );
+		if ( ret ){
+			dev_err( dev, "failed to create reg_access sysfs entry.\n" );
+			return ret;
+		}
+#	endif // defined NEB_DEBUG
+
+	return ret;
 }
 
 static void bq25890_remove(struct i2c_client *client)
@@ -1548,6 +1751,17 @@ static void bq25890_remove(struct i2c_client *client)
 		/* reset all registers to default values */
 		bq25890_chip_reset(bq);
 	}
+#	if defined NEB_DEBUG || defined NTK_EXTENSIONS
+		device_remove_file( &client->dev, &dev_attr_reg_list );
+#	endif // defined NEB_DEBUG || defined NTK_EXTENSIONS
+#	if defined NTK_EXTENSIONS
+		device_remove_file( &client->dev, &dev_attr_reg_add );
+		device_remove_file( &client->dev, &dev_attr_reg_remove );
+#	endif // defined NTK_EXTENSIONS
+#	if defined NEB_DEBUG
+		device_remove_file( &client->dev, &dev_attr_reg_select );
+		device_remove_file( &client->dev, &dev_attr_reg_access );
+#	endif // defined NEB_DEBUG
 }
 
 static void bq25890_shutdown(struct i2c_client *client)
@@ -1611,6 +1825,193 @@ unlock:
 	return ret;
 }
 #endif
+#if defined NEB_DEBUG || defined NTK_EXTENSIONS
+	static int bq25890_find_register( const char* field_name, size_t field_name_length )
+	{
+		enum bq25890_fields index;
+		field_name_length -= 1;	// account for the newline
+		for ( index = F_EN_HIZ; index < F_MAX_FIELDS; ++index )
+		{
+			const char* name = bq25890_reg_fields[ index ].name;
+			size_t name_length = strlen( name );
+			if ( name_length == field_name_length )
+			{
+				int result = strncasecmp( field_name, name, name_length );
+				if ( 0 == result )
+				{
+					return index;
+				}
+			}
+		}
+		return -1;
+	}
+
+	static ssize_t bq25890_list_fields( struct device* dev, struct device_attribute* attr, char* buf )
+	{
+		ssize_t offset = 0;
+		enum bq25890_fields index;
+		for ( index = 0; index < F_MAX_FIELDS; ++index )
+		{
+			const char* name = bq25890_reg_fields[ index ].name;
+			offset += scnprintf( buf + offset, PAGE_SIZE - offset, "%s ", name );
+		}
+		offset += scnprintf( buf + offset, PAGE_SIZE - offset, "\n" );
+		return offset;
+	}
+
+#	if defined NEB_DEBUG
+	static ssize_t bq25890_read_field( struct device* dev, struct device_attribute* attr, char* buf )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		ssize_t ret = 0;
+		unsigned int i;
+		i = bq25890_field_read( bq, bq->current_field );
+		if ( i < 0 ) {
+			dev_err( dev, "Cannot read field %s\n", bq25890_reg_fields[ bq->current_field ].name );
+			return -1;
+		}
+		ret = scnprintf( buf, PAGE_SIZE, "%x\n", i );
+		return ret;
+	}
+
+	static ssize_t bq25890_write_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		ssize_t ret;
+		unsigned int i;
+		int number_of_fields = sscanf( buf, "%x", &i );
+		if ( 1 == number_of_fields )
+		{
+			ret = bq25890_field_write( bq, bq->current_field, i );
+		}
+		if ( ret < 0 )
+		{
+			dev_err( dev, "Cannot write field %s\n", bq25890_reg_fields[ bq->current_field ].name );
+		}
+		return count;
+	}
+#	endif // defined NEB_DEBUG
+#	if defined NTK_EXTENSIONS
+	/*
+	 * We need to know what field we're dealing with. I think the only way this can be done
+	 * is by introspection of the file name by which these functions were called.
+	 */
+	static ssize_t bq25890_read_field( struct device* dev, struct device_attribute* attr, char* buf )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		struct dynamic_device_attribute* pdyn_attr = ( struct dynamic_device_attribute* ) attr;
+		ssize_t ret = 0;
+		unsigned int i;
+		i = bq25890_field_read( bq, pdyn_attr->field_id );
+		if ( i < 0 ) {
+			dev_err( dev, "Cannot read field %s\n", bq25890_reg_fields[ pdyn_attr->field_id ].name );
+			return -1;
+		}
+		ret = scnprintf( buf, PAGE_SIZE, "%x\n", i );
+		return ret;
+	}
+
+	static ssize_t bq25890_write_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		struct dynamic_device_attribute* pdyn_attr = ( struct dynamic_device_attribute* ) attr;
+		ssize_t ret;
+		unsigned int i;
+		int number_of_fields = sscanf( buf, "%x", &i );
+		if ( 1 == number_of_fields )
+		{
+			ret = bq25890_field_write( bq, pdyn_attr->field_id, i );
+		}
+		if ( ret < 0 )
+		{
+			dev_err( dev, "Cannot write field %s\n", bq25890_reg_fields[ pdyn_attr->field_id ].name );
+		}
+		return count;
+	}
+#	endif // defined NTK_EXTENSIONS
+#endif // defined NEB_DEBUG || defined NTK_EXTENSIONS
+
+#if defined NTK_EXTENSIONS
+	static ssize_t bq25890_add_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		struct reg_file* preg_file;
+		int ret;
+		int index = bq25890_find_register( buf, count );
+		if ( index < 0 )
+		{
+			ret = -EINVAL;
+			goto exit;
+		}
+		preg_file = kmalloc( sizeof( struct reg_file ), GFP_KERNEL );
+		preg_file->pfield = &bq25890_reg_fields[ index ];
+		preg_file->dyn_attr.attr.attr.name = preg_file->pfield->name;
+		preg_file->dyn_attr.attr.attr.mode = S_IWUSR | S_IRUGO;
+		preg_file->dyn_attr.attr.show = bq25890_read_field;
+		preg_file->dyn_attr.attr.store = bq25890_write_field;
+		preg_file->dyn_attr.field_id = ( enum bq25890_fields ) index;
+		ret = device_create_file( &bq->charger->dev, &preg_file->dyn_attr.attr );
+		if ( ret != 0 )
+		{
+			kfree( preg_file );
+			dev_err( dev, "failed to create %s sysfs entry\n", preg_file->pfield->name );
+			goto exit;
+		}
+		list_add( &preg_file->list, &reg_files  );
+		ret = ( int ) count;
+	exit:
+		return ( ssize_t ) ret;
+	}
+
+	static ssize_t bq25890_remove_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		int ret = ( int ) count;
+		struct reg_file* preg_file;
+		list_for_each_entry(preg_file, &reg_files, list)
+		{
+			int compare = strncmp( preg_file->pfield->name, buf, count - 1 );
+			if ( 0 == compare )
+			{
+				device_remove_file( &bq->charger->dev, &preg_file->dyn_attr.attr );
+				list_del( &preg_file->list );
+				kfree( preg_file );
+				break;
+			}
+		}
+		return ( ssize_t ) ret;
+	}
+#endif // defined NTK_EXTENSIONS
+
+#if defined NEB_DEBUG
+	static ssize_t bq25890_get_field( struct device* dev, struct device_attribute* attr, char* buf )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		ssize_t ret;
+		ret = scnprintf( buf, PAGE_SIZE, "%s\n", bq25890_reg_fields[ bq->current_field ].name );
+		return ret;
+	}
+
+	static ssize_t bq25890_set_field( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+	{
+		struct power_supply *charger = ( struct power_supply* ) i2c_get_clientdata( to_i2c_client( dev ) );
+		struct bq25890_device *bq = ( struct bq25890_device* ) charger->drv_data;
+		int index;
+		index = bq25890_find_register( buf, count );
+		if ( index >= 0 )
+		{
+			bq->current_field = ( enum bq25890_fields ) index;
+		}
+		return count;
+	}
+#endif // defined NEB_DEBUG
 
 static const struct dev_pm_ops bq25890_pm = {
 	SET_SYSTEM_SLEEP_PM_OPS(bq25890_suspend, bq25890_resume)
