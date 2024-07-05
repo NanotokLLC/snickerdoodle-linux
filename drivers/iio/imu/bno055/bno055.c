@@ -31,6 +31,7 @@
 #include <linux/iio/sysfs.h>
 #include <linux/iio/trigger_consumer.h>
 #include <linux/iio/triggered_buffer.h>
+#include <linux/acpi.h> // 2024.07.04:NEB
 
 #include "bno055.h"
 
@@ -78,10 +79,6 @@
 #define BNO055_SYS_TRIGGER_RST_SYS BIT(5)
 #define BNO055_SYS_TRIGGER_CLK_SEL BIT(7)
 #define BNO055_OPR_MODE_REG		0x3D
-#define BNO055_OPR_MODE_CONFIG 0x0
-#define BNO055_OPR_MODE_AMG 0x7
-#define BNO055_OPR_MODE_FUSION_FMC_OFF 0xB
-#define BNO055_OPR_MODE_FUSION 0xC
 #define BNO055_UNIT_SEL_REG		0x3B
 /* Android orientation mode means: pitch value decreases turning clockwise */
 #define BNO055_UNIT_SEL_ANDROID BIT(7)
@@ -89,6 +86,10 @@
 #define BNO055_CALDATA_START		0x55
 #define BNO055_CALDATA_END		0x6A
 #define BNO055_CALDATA_LEN 22
+
+/* 2024.07.04:NEB axis registers */
+#define BNO055_REG_AXIS_MAP			0x41
+#define BNO055_REG_AXIS_SIGN		0x42
 
 /*
  * The difference in address between the register that contains the
@@ -112,6 +113,74 @@
 #define BNO055_UID_LOWER_REG		BNO055_PG1(0x50)
 #define BNO055_UID_HIGHER_REG		BNO055_PG1(0x5F)
 #define BNO055_UID_LEN 16
+
+/* 2024.07.04:NEB: devicetree option strings */
+#define BNO055_OPT_PREFIX			""
+#define BNO055_OPT_MODE				BNO055_OPT_PREFIX "operation-mode"
+#define BNO055_OPT_UNIT_TEMP		BNO055_OPT_PREFIX "unit-temp"
+#define BNO055_OPT_CELSIUS			"celsius"
+#define BNO055_OPT_FAHRENHEIT		"fahrenheit"
+#define BNO055_OPT_UNIT_EULER		BNO055_OPT_PREFIX "unit-euler"
+#define BNO055_OPT_DEGREES			"degrees"
+#define BNO055_OPT_RADIANS			"radians"
+#define BNO055_OPT_UNIT_GYRO		BNO055_OPT_PREFIX "unit-gyro"
+#define BNO055_OPT_DPS				"dps"
+#define BNO055_OPT_RPS				"rps"
+#define BNO055_OPT_UNIT_ACCEL		BNO055_OPT_PREFIX "unit-accel"
+#define BNO055_OPT_MPS_SQUARED		"mps2"
+#define BNO055_OPT_MILLI_G			"millig"
+#define BNO055_OPT_ROT_CONVENTION	BNO055_OPT_PREFIX "rot-convention"
+#define BNO055_OPT_WINDOWS			"windows"
+#define BNO055_OPT_ANDROID			"android"
+#define BNO055_OPT_AXIS_MAP			BNO055_OPT_PREFIX "axis-map"
+
+#define BNO055_ROT_CONVENTION_WINDOWS	0
+#define BNO055_ROT_CONVENTION_ANDROID	BIT(7)
+#define BNO055_TEMP_CELSIUS				0
+#define BNO055_TEMP_FAHRENHEIT			BIT(4)
+#define BNO055_EUL_DEGREES				0
+#define BNO055_EUL_RADIANS				BIT(2)
+#define BNO055_GYR_DEGREES				0
+#define BNO055_GYR_RADIANS				BIT(1)
+#define BNO055_ACC_MPSS					0
+#define BNO055_ACC_MILLIG				BIT(0)
+
+enum bno055_axis_map
+{
+	AXIS_MAP_X_AXIS = 0,
+	AXIS_MAP_Y_AXIS = 1,
+	AXIS_MAP_Z_AXIS = 2,
+};
+
+enum bno055_axis_sign
+{
+	AXIS_SIGN_POSITIVE = 0,
+	AXIS_SIGN_NEGATIVE = 1,
+};
+
+enum bno055_operation_mode
+{
+	BNO055_OPR_MODE_CONFIG = 0x0,
+
+	/* Non-fusion modes. */
+	BNO055_OPR_MODE_ACC_ONLY = 0x1,
+	BNO055_OPR_MODE_MAG_ONLY = 0x2,
+	BNO055_OPR_MODE_GYRO_ONLY = 0x3,
+	BNO055_OPR_MODE_ACC_MAG = 0x4,
+	BNO055_OPR_MODE_ACC_GYRO = 0x5,
+	BNO055_OPR_MODE_MAG_GYRO = 0x6,
+	BNO055_OPR_MODE_AMG = 0x7,
+
+	/* Fusion modes. */
+	BNO055_OPR_MODE_IMU = 0x8,
+	BNO055_OPR_MODE_COMPASS = 0x9,
+	BNO055_OPR_MODE_M4G = 0xa,
+	BNO055_OPR_MODE_FUSION_FMC_OFF = 0xb,
+	BNO055_OPR_MODE_FUSION = 0xc,
+
+	BNO055_OPR_MODE_MIN = BNO055_OPR_MODE_ACC_ONLY,
+	BNO055_OPR_MODE_MAX = BNO055_OPR_MODE_FUSION
+};
 
 struct bno055_sysfs_attr {
 	int *vals;
@@ -195,11 +264,42 @@ static struct bno055_sysfs_attr bno055_mag_odr = {
 	.type = IIO_VAL_INT,
 };
 
+struct bno055_axis
+{
+	union
+	{
+		unsigned int raw;
+		struct
+		{
+			unsigned int x : 2;
+			unsigned int y : 2;
+			unsigned int z : 2;
+		};
+	} axis;
+	union
+	{
+		unsigned int raw;
+		struct
+		{
+			unsigned int z : 1;
+			unsigned int y : 1;
+			unsigned int x : 1;
+		};
+	} sign;
+};
+
 struct bno055_priv {
 	struct regmap *regmap;
 	struct device *dev;
 	struct clk *clk;
-	int operation_mode;
+	/* 2024.07.04:NEB: devicetree options */
+	enum bno055_operation_mode operation_mode;
+	struct bno055_axis axis;
+	unsigned int unit_temp;
+	unsigned int unit_euler;
+	unsigned int unit_gyro;
+	unsigned int unit_accel;
+	unsigned int rot_convention;
 	int xfer_burst_break_thr;
 	struct mutex lock;
 	u8 uid[BNO055_UID_LEN];
@@ -211,6 +311,20 @@ struct bno055_priv {
 	} buf;
 	struct dentry *debugfs;
 };
+
+static int bno055_read_options( struct bno055_priv *data );
+static int bno055_option_axis_map( struct bno055_priv* data );
+static bool bno055_is_axis_negative( char* axis );
+static enum bno055_axis_map get_axis( const char* axis );
+static int bno055_parse_axis_map( const char* buf, struct bno055_axis* axis );
+static int bno055_set_axis_map( struct bno055_priv* data );
+static int bno055_option_unit_temp( struct bno055_priv* data );
+static int bno055_option_unit_euler( struct bno055_priv* data );
+static int bno055_option_unit_gyro( struct bno055_priv* data );
+static int bno055_option_unit_accel( struct bno055_priv* data );
+static int bno055_option_rot_convention( struct bno055_priv* data );
+static ssize_t axis_map_store( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
+static ssize_t axis_map_show( struct device* dev, struct device_attribute* attr, char* buf );
 
 static bool bno055_regmap_volatile(struct device *dev, unsigned int reg)
 {
@@ -349,9 +463,8 @@ static int bno055_system_reset(struct bno055_priv *priv)
 
 static int bno055_init(struct bno055_priv *priv, const u8 *caldata, int len)
 {
-	int ret;
-
-	ret = bno055_operation_mode_do_set(priv, BNO055_OPR_MODE_CONFIG);
+	struct device *dev = regmap_get_device( priv->regmap );
+	int ret = bno055_operation_mode_do_set(priv, BNO055_OPR_MODE_CONFIG);
 	if (ret)
 		return ret;
 
@@ -364,13 +477,26 @@ static int bno055_init(struct bno055_priv *priv, const u8 *caldata, int len)
 			   priv->clk ? BNO055_SYS_TRIGGER_CLK_SEL : 0);
 	if (ret)
 		return ret;
-
-	/* use standard SI units */
-	ret = regmap_write(priv->regmap, BNO055_UNIT_SEL_REG,
-			   BNO055_UNIT_SEL_ANDROID | BNO055_UNIT_SEL_GYR_RPS);
-	if (ret)
+	/*
+	 * Axis map
+	 */
+	ret = bno055_set_axis_map( priv );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set axis map\n" );
 		return ret;
+	}
 
+	/*
+	 * Configure units to what we care about.  Also configure
+	 * rotation convention.  See datasheet Section 4.3.60.
+	 */
+	ret = regmap_write( priv->regmap, BNO055_UNIT_SEL_REG, priv->rot_convention | priv->unit_temp | priv->unit_euler | priv->unit_gyro | priv->unit_accel );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set measurement units\n" );
+		return ret;
+	}
 	if (caldata) {
 		ret = bno055_calibration_load(priv, caldata, len);
 		if (ret)
@@ -1327,6 +1453,7 @@ static void bno055_debugfs_init(struct iio_dev *iio_dev)
 static IIO_DEVICE_ATTR_RW(fusion_enable, 0);
 static IIO_DEVICE_ATTR_RW(in_magn_calibration_fast_enable, 0);
 static IIO_DEVICE_ATTR_RW(in_accel_range_raw, 0);
+static IIO_DEVICE_ATTR_RW( axis_map, 0 );
 
 static IIO_DEVICE_ATTR_RO(in_accel_range_raw_available, 0);
 static IIO_DEVICE_ATTR_RO(sys_calibration_auto_status, 0);
@@ -1338,6 +1465,7 @@ static IIO_DEVICE_ATTR_RO(serialnumber, 0);
 static struct attribute *bno055_attrs[] = {
 	&iio_dev_attr_in_accel_range_raw_available.dev_attr.attr,
 	&iio_dev_attr_in_accel_range_raw.dev_attr.attr,
+	&iio_dev_attr_axis_map.dev_attr.attr,
 	&iio_dev_attr_fusion_enable.dev_attr.attr,
 	&iio_dev_attr_in_magn_calibration_fast_enable.dev_attr.attr,
 	&iio_dev_attr_sys_calibration_auto_status.dev_attr.attr,
@@ -1615,6 +1743,13 @@ int bno055_probe(struct device *dev, struct regmap *regmap,
 	if (ret)
 		return ret;
 
+	ret = bno055_read_options( priv );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set options: %d", ret );
+		return ret;
+	}
+
 	/*
 	 * The stock FW version contains a bug (see comment at the beginning of
 	 * this file) that causes the anglvel scale to be changed depending on
@@ -1679,6 +1814,408 @@ int bno055_probe(struct device *dev, struct regmap *regmap,
 	return 0;
 }
 EXPORT_SYMBOL_NS_GPL(bno055_probe, IIO_BNO055);
+
+static int bno055_read_options( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	int ret = device_property_read_u32( dev, BNO055_OPT_MODE, &data->operation_mode );
+	if ( ret < 0 )
+	{
+		dev_info( dev, "failed to read operation mode, falling back to accel+gyro\n" );
+		data->operation_mode = BNO055_OPR_MODE_ACC_GYRO;
+	}
+	if ( ( data->operation_mode < BNO055_OPR_MODE_MIN ) || ( data->operation_mode > BNO055_OPR_MODE_MAX ) )
+	{
+		dev_err( dev, "bad operation mode %d\n", data->operation_mode );
+		ret = -EINVAL;
+		goto exit;
+	}
+	dev_info( dev, "selected mode 0x%02x", data->operation_mode );
+	ret = bno055_option_axis_map( data );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = bno055_option_unit_temp( data );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = bno055_option_unit_euler( data );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = bno055_option_unit_gyro( data );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = bno055_option_unit_accel( data );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = bno055_option_rot_convention( data );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static int bno055_option_axis_map( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	const char* parameter_string = NULL;
+	int ret = device_property_read_string( dev, BNO055_OPT_AXIS_MAP, &parameter_string );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "axis map not specified: %d\n", ret );
+		ret = 0;
+		goto exit;
+	}
+	dev_info( dev, "axis map: %s\n", parameter_string );
+	ret = bno055_parse_axis_map( parameter_string, &data->axis );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to parse option \"%s\"", parameter_string );
+		ret = -EINVAL;
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static int bno055_option_unit_temp( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	const char* parameter_string = NULL;
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_TEMP, &parameter_string );
+	if ( ret < 0 )
+	{
+		dev_info( dev, "temperature unit not specified: %d\n", ret );
+		data->unit_temp = BNO055_TEMP_CELSIUS;
+		ret = 0;
+		goto exit;
+	}
+	dev_info( dev, "temperature unit: %s\n", parameter_string );
+	if ( strncmp( parameter_string, BNO055_OPT_CELSIUS, sizeof( BNO055_OPT_CELSIUS ) - 1 ) )
+	{
+		data->unit_temp = BNO055_TEMP_CELSIUS;
+	}
+	else if ( strncmp( parameter_string, BNO055_OPT_FAHRENHEIT, sizeof( BNO055_OPT_FAHRENHEIT ) - 1 ) )
+	{
+		data->unit_temp = BNO055_TEMP_FAHRENHEIT;
+	}
+	else
+	{
+		ret = -EINVAL;
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static int bno055_option_unit_euler( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	const char* parameter_string = NULL;
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_EULER, &parameter_string );
+	if ( ret < 0 )
+	{
+		dev_info( dev, "Euler unit not specified: %d\n", ret );
+		data->unit_euler = BNO055_EUL_DEGREES;
+		ret = 0;
+		goto exit;
+	}
+	dev_info( dev, "Euler unit: %s\n", parameter_string );
+	if ( strncmp( parameter_string, BNO055_OPT_DEGREES, sizeof( BNO055_OPT_DEGREES ) - 1 ) )
+	{
+		data->unit_euler = BNO055_EUL_DEGREES;
+	}
+	else if ( strncmp( parameter_string, BNO055_OPT_RADIANS, sizeof( BNO055_OPT_RADIANS ) - 1 ) )
+	{
+		data->unit_euler = BNO055_EUL_RADIANS;
+	}
+	else
+	{
+		ret = -EINVAL;
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static int bno055_option_unit_gyro( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	const char* parameter_string = NULL;
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_GYRO, &parameter_string );
+	if ( ret < 0 )
+	{
+		dev_info( dev, "gyro unit not specified: %d\n", ret );
+		data->unit_gyro = BNO055_GYR_DEGREES;
+		ret = 0;
+		goto exit;
+	}
+	dev_info( dev, "gyro unit: %s\n", parameter_string );
+	if ( strncmp( parameter_string, BNO055_OPT_DPS, sizeof( BNO055_OPT_DPS ) - 1 ) )
+	{
+		data->unit_gyro = BNO055_GYR_DEGREES;
+	}
+	else if ( strncmp( parameter_string, BNO055_OPT_RPS, sizeof( BNO055_OPT_RPS ) - 1 ) )
+	{
+		data->unit_gyro = BNO055_GYR_RADIANS;
+	}
+	else
+	{
+		ret = -EINVAL;
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static int bno055_option_unit_accel( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	const char* parameter_string = NULL;
+	int ret = device_property_read_string( dev, BNO055_OPT_UNIT_ACCEL, &parameter_string );
+	if ( ret < 0 )
+	{
+		dev_info( dev, "accel unit not specified: %d\n", ret );
+		data->unit_accel = BNO055_ACC_MPSS;
+		ret = 0;
+		goto exit;
+	}
+	dev_info( dev, "accel unit: %s\n", parameter_string );
+	if ( strncmp( parameter_string, BNO055_OPT_MPS_SQUARED, sizeof( BNO055_OPT_MPS_SQUARED ) - 1 ) )
+	{
+		data->unit_accel = BNO055_ACC_MPSS;
+	}
+	else if ( strncmp( parameter_string, BNO055_OPT_MILLI_G, sizeof( BNO055_OPT_MILLI_G ) - 1 ) )
+	{
+		data->unit_accel = BNO055_ACC_MILLIG;
+	}
+	else
+	{
+		ret = -EINVAL;
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static int bno055_option_rot_convention( struct bno055_priv *data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	const char* parameter_string = NULL;
+	int ret = device_property_read_string( dev, BNO055_OPT_ROT_CONVENTION, &parameter_string );
+	if ( ret < 0 )
+	{
+		dev_info( dev, "rotation convention not specified: %d\n", ret );
+		data->rot_convention = BNO055_ROT_CONVENTION_WINDOWS;
+		ret = 0;
+		goto exit;
+	}
+	dev_info( dev, "rotation convention: %s\n", parameter_string );
+	if ( strncmp( parameter_string, BNO055_OPT_WINDOWS, sizeof( BNO055_OPT_WINDOWS ) - 1 ) )
+	{
+		data->rot_convention = BNO055_ROT_CONVENTION_WINDOWS;
+	}
+	else if ( strncmp( parameter_string, BNO055_OPT_ANDROID, sizeof( BNO055_OPT_ANDROID ) - 1 ) )
+	{
+		data->rot_convention = BNO055_ROT_CONVENTION_ANDROID;
+	}
+	else
+	{
+		ret = -EINVAL;
+		goto exit;
+	}
+	exit:
+	return ret;
+}
+
+static bool bno055_is_axis_negative( char* axis )
+{
+	bool negative = false;
+	if ( axis[ 0 ] == '+' )
+	{
+		axis[ 0 ] = axis[ 1 ];
+		axis[ 1 ] = '\0';
+	}
+	else if ( axis[ 0 ] == '-' )
+	{
+		axis[ 0 ] = axis[ 1 ];
+		axis[ 1 ] = '\0';
+		negative = true;
+	}
+	return negative;
+}
+
+static enum bno055_axis_map get_axis( const char* axis )
+{
+	enum bno055_axis_map value;
+	switch ( tolower( axis[ 0 ] ) )
+	{
+	case 'x':
+		{
+			value = AXIS_MAP_X_AXIS;
+		}
+		break;
+	case 'y':
+		{
+			value = AXIS_MAP_Y_AXIS;
+		}
+		break;
+	case 'z':
+		{
+			value = AXIS_MAP_Z_AXIS;
+		}
+		break;
+	default:
+		{
+			value = ( enum bno055_axis_map ) - 1;
+		}
+		break;
+	}
+	return value;
+}
+
+static int bno055_set_axis_map( struct bno055_priv* data )
+{
+	struct device *dev = regmap_get_device( data->regmap );
+	int ret;
+	mutex_lock(&data->lock);
+	/*
+	* Axis map
+	*/
+	ret = regmap_write( data->regmap, BNO055_REG_AXIS_MAP, data->axis.axis.raw );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set axis map\n" );
+		ret = ret;
+		goto exit;
+	}
+	ret = regmap_write( data->regmap, BNO055_REG_AXIS_SIGN, data->axis.sign.raw );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set axis sign\n" );
+		ret = ret;
+		goto exit;
+	}
+	exit:
+	mutex_unlock(&data->lock);
+	return ret;
+}
+
+static int bno055_parse_axis_map( const char* buf, struct bno055_axis* axis )
+{
+	struct
+	{
+		char* x;
+		char* y;
+		char* z;
+	} value;
+	const char* delim = " ,\t\n";
+	char local_buf[ 16 ];
+	char* pbuf = &local_buf[ 0 ];
+
+	strncpy( local_buf, buf, sizeof( local_buf ) );
+	local_buf[ 15 ] = '\0';
+	value.x = strsep( &pbuf, delim );
+	if ( NULL == value.x )
+	{
+		return -1;
+	}
+	value.y = strsep( &pbuf, delim );
+	if ( NULL == value.y )
+	{
+		return -1;
+	}
+	value.z = strsep( &pbuf, delim );
+	if ( NULL == value.z )
+	{
+		return -1;
+	}
+	axis->sign.x = bno055_is_axis_negative( value.x ) ? AXIS_SIGN_NEGATIVE : AXIS_SIGN_POSITIVE;
+	axis->sign.y = bno055_is_axis_negative( value.y ) ? AXIS_SIGN_NEGATIVE : AXIS_SIGN_POSITIVE;
+	axis->sign.z = bno055_is_axis_negative( value.z ) ? AXIS_SIGN_NEGATIVE : AXIS_SIGN_POSITIVE;
+	axis->axis.x = get_axis( value.x );
+	axis->axis.y = get_axis( value.y );
+	axis->axis.z = get_axis( value.z );
+	return 0;
+}
+
+static ssize_t axis_map_show( struct device* dev, struct device_attribute* attr, char* buf )
+{
+	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+	struct bno055_axis axis;
+	int ret;
+	mutex_lock(&data->lock);
+	ret = regmap_read( data->regmap, BNO055_REG_AXIS_MAP, &axis.axis.raw );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = regmap_read( data->regmap, BNO055_REG_AXIS_SIGN, &axis.sign.raw );
+	if ( ret < 0 )
+	{
+		goto exit;
+	}
+	ret = scnprintf( buf, PAGE_SIZE, "%s%c %s%c %s%c\n",
+		axis.sign.x ? "-" : "", 'x' + axis.axis.x,
+		axis.sign.y ? "-" : "", 'x' + axis.axis.y,
+		axis.sign.z ? "-" : "", 'x' + axis.axis.z );
+	exit:
+	mutex_unlock(&data->lock);
+	return ( ssize_t ) ret;
+}
+
+static ssize_t axis_map_store( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+{
+	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+	struct bno055_axis axis;
+
+	/*dev_info( dev, "%s: x=%s%c, y=%s%c, z=%s%c\n",
+		__func__,
+		data->axis.sign.x ? "-" : "", 'x' + data->axis.axis.x,
+		data->axis.sign.y ? "-" : "", 'x' + data->axis.axis.y,
+		data->axis.sign.z ? "-" : "", 'x' + data->axis.axis.z );*/
+	int ret;
+	mutex_lock(&data->lock);
+	ret = bno055_parse_axis_map( buf, &axis );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to parse axis definition\n" );
+		goto exit;
+	}
+	data->axis = axis;
+	ret = bno055_operation_mode_do_set(data, BNO055_OPR_MODE_CONFIG);
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set configuration mode\n" );
+		goto exit;
+	}
+	ret = bno055_set_axis_map( data );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set axis map\n" );
+		goto exit;
+	}
+	ret = bno055_operation_mode_do_set(data, data->operation_mode);
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed to set operating mode\n" );
+		goto exit;
+	}
+	ret = count;
+	exit:
+	mutex_unlock(&data->lock);
+	return ret;
+}
 
 MODULE_AUTHOR("Andrea Merello <andrea.merello@iit.it>");
 MODULE_DESCRIPTION("Bosch BNO055 driver");
