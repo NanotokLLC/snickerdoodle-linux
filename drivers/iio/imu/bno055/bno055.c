@@ -1202,6 +1202,28 @@ static ssize_t fusion_enable_store(struct device *dev,
 	return len;
 }
 
+static ssize_t mode_show( struct device* dev, struct device_attribute* attr, char* buf )
+{
+	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+    return sysfs_emit( buf, "0x%x\n", data->operation_mode );
+}
+
+static ssize_t mode_store( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
+{
+	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+    unsigned long mode;
+    int ret = kstrtoul( buf, 0, &mode );
+	if ( ret )
+		return ret;
+
+    if ( ( mode < BNO055_OPR_MODE_MIN ) || ( mode > BNO055_OPR_MODE_MAX ) )
+    {
+        return -EINVAL;
+    }
+	return bno055_operation_mode_set( data, ( int ) mode ) ?: count;
+}
+
+
 static ssize_t in_magn_calibration_fast_enable_show(struct device *dev,
 						    struct device_attribute *attr,
 						    char *buf)
@@ -1356,6 +1378,15 @@ exit_unlock:
 	return ret;
 }
 
+static ssize_t calibration_data_write( struct file* filp, struct kobject* kobj, struct bin_attribute* bin_attr, char* buf, loff_t pos, size_t count )
+{
+	struct bno055_priv *priv = iio_priv(dev_to_iio_dev(kobj_to_dev(kobj)));
+	if (count != BNO055_CALDATA_LEN || pos)
+		return -EINVAL;
+
+	return bno055_init(priv, buf, count);
+}
+
 static ssize_t sys_calibration_auto_status_show(struct device *dev,
 						struct device_attribute *a,
 						char *buf)
@@ -1454,6 +1485,7 @@ static IIO_DEVICE_ATTR_RW(fusion_enable, 0);
 static IIO_DEVICE_ATTR_RW(in_magn_calibration_fast_enable, 0);
 static IIO_DEVICE_ATTR_RW(in_accel_range_raw, 0);
 static IIO_DEVICE_ATTR_RW( axis_map, 0 );
+static IIO_DEVICE_ATTR_RW( mode, 0 );
 
 static IIO_DEVICE_ATTR_RO(in_accel_range_raw_available, 0);
 static IIO_DEVICE_ATTR_RO(sys_calibration_auto_status, 0);
@@ -1466,6 +1498,7 @@ static struct attribute *bno055_attrs[] = {
 	&iio_dev_attr_in_accel_range_raw_available.dev_attr.attr,
 	&iio_dev_attr_in_accel_range_raw.dev_attr.attr,
 	&iio_dev_attr_axis_map.dev_attr.attr,
+	&iio_dev_attr_mode.dev_attr.attr,
 	&iio_dev_attr_fusion_enable.dev_attr.attr,
 	&iio_dev_attr_in_magn_calibration_fast_enable.dev_attr.attr,
 	&iio_dev_attr_sys_calibration_auto_status.dev_attr.attr,
@@ -1476,7 +1509,7 @@ static struct attribute *bno055_attrs[] = {
 	NULL
 };
 
-static BIN_ATTR_RO(calibration_data, BNO055_CALDATA_LEN);
+static BIN_ATTR_RW(calibration_data, BNO055_CALDATA_LEN);
 
 static struct bin_attribute *bno055_bin_attrs[] = {
 	&bin_attr_calibration_data,
