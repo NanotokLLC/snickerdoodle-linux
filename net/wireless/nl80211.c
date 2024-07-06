@@ -19111,15 +19111,42 @@ static void cfg80211_send_cqm(struct sk_buff *msg, gfp_t gfp)
 				NL80211_MCGRP_MLME, gfp);
 }
 
+#define FIX_RSSI_NOTIFY_NULL_POINTER	1
+
 void cfg80211_cqm_rssi_notify(struct net_device *dev,
 			      enum nl80211_cqm_rssi_threshold_event rssi_event,
 			      s32 rssi_level, gfp_t gfp)
 {
-	struct wireless_dev *wdev = dev->ieee80211_ptr;
-	struct cfg80211_cqm_config *cqm_config;
+#	if FIX_RSSI_NOTIFY_NULL_POINTER
+		/*2024.04.26:NEB: a bug according to TI*/
+		struct wireless_dev *wdev = NULL;
+		struct cfg80211_registered_device *rdev = NULL;
+		struct cfg80211_cqm_config *cqm_config = NULL;
+
+		if ( NULL == dev )
+		{
+			pr_err_ratelimited( "NULL dev in cfg80211_cqm_rssi_notify" );
+			return;
+		}
+		wdev = dev->ieee80211_ptr;
+		if ( NULL == wdev )
+		{
+			pr_err_ratelimited( "NULL wdev in cfg80211_cqm_rssi_notify" );
+			return;
+		}
+		rdev = wiphy_to_rdev(wdev->wiphy);
+		if ( NULL == rdev )
+		{
+			pr_err_ratelimited( "NULL rdev in cfg80211_cqm_rssi_notify" );
+			return;
+		}
+		/*2024.04.26:NEB: to here*/
+#	else
+		struct wireless_dev *wdev = dev->ieee80211_ptr;
+		struct cfg80211_cqm_config *cqm_config;
+#	endif /* FIX_RSSI_NOTIFY_NULL_POINTER */
 
 	trace_cfg80211_cqm_rssi_notify(dev, rssi_event, rssi_level);
-
 	if (WARN_ON(rssi_event != NL80211_CQM_RSSI_THRESHOLD_EVENT_LOW &&
 		    rssi_event != NL80211_CQM_RSSI_THRESHOLD_EVENT_HIGH))
 		return;
