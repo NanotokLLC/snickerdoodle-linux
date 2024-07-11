@@ -312,17 +312,17 @@ struct bno055_priv {
 	struct dentry *debugfs;
 };
 
-static int bno055_read_options( struct bno055_priv *data );
-static int bno055_option_axis_map( struct bno055_priv* data );
+static int bno055_read_options( struct bno055_priv *priv );
+static int bno055_option_axis_map( struct bno055_priv* priv );
 static bool bno055_is_axis_negative( char* axis );
 static enum bno055_axis_map get_axis( const char* axis );
 static int bno055_parse_axis_map( const char* buf, struct bno055_axis* axis );
-static int bno055_set_axis_map( struct bno055_priv* data );
-static int bno055_option_unit_temp( struct bno055_priv* data );
-static int bno055_option_unit_euler( struct bno055_priv* data );
-static int bno055_option_unit_gyro( struct bno055_priv* data );
-static int bno055_option_unit_accel( struct bno055_priv* data );
-static int bno055_option_rot_convention( struct bno055_priv* data );
+static int bno055_set_axis_map( struct bno055_priv* priv );
+static int bno055_option_unit_temp( struct bno055_priv* priv );
+static int bno055_option_unit_euler( struct bno055_priv* priv );
+static int bno055_option_unit_gyro( struct bno055_priv* priv );
+static int bno055_option_unit_accel( struct bno055_priv* priv );
+static int bno055_option_rot_convention( struct bno055_priv* priv );
 static ssize_t axis_map_store( struct device* dev, struct device_attribute* attr, const char* buf, size_t count );
 static ssize_t axis_map_show( struct device* dev, struct device_attribute* attr, char* buf );
 
@@ -1204,13 +1204,13 @@ static ssize_t fusion_enable_store(struct device *dev,
 
 static ssize_t mode_show( struct device* dev, struct device_attribute* attr, char* buf )
 {
-	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
-    return sysfs_emit( buf, "0x%x\n", data->operation_mode );
+	struct bno055_priv *priv = iio_priv(dev_to_iio_dev(dev));
+    return sysfs_emit( buf, "0x%x\n", priv->operation_mode );
 }
 
 static ssize_t mode_store( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
 {
-	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+	struct bno055_priv *priv = iio_priv(dev_to_iio_dev(dev));
     unsigned long mode;
     int ret = kstrtoul( buf, 0, &mode );
 	if ( ret )
@@ -1220,7 +1220,7 @@ static ssize_t mode_store( struct device* dev, struct device_attribute* attr, co
     {
         return -EINVAL;
     }
-	return bno055_operation_mode_set( data, ( int ) mode ) ?: count;
+	return bno055_operation_mode_set( priv, ( int ) mode ) ?: count;
 }
 
 
@@ -2184,16 +2184,16 @@ static int bno055_parse_axis_map( const char* buf, struct bno055_axis* axis )
 
 static ssize_t axis_map_show( struct device* dev, struct device_attribute* attr, char* buf )
 {
-	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+	struct bno055_priv *priv = iio_priv(dev_to_iio_dev(dev));
 	struct bno055_axis axis;
 	int ret;
-	mutex_lock(&data->lock);
-	ret = regmap_read( data->regmap, BNO055_REG_AXIS_MAP, &axis.axis.raw );
+	mutex_lock(&priv->lock);
+	ret = regmap_read( priv->regmap, BNO055_REG_AXIS_MAP, &axis.axis.raw );
 	if ( ret < 0 )
 	{
 		goto exit;
 	}
-	ret = regmap_read( data->regmap, BNO055_REG_AXIS_SIGN, &axis.sign.raw );
+	ret = regmap_read( priv->regmap, BNO055_REG_AXIS_SIGN, &axis.sign.raw );
 	if ( ret < 0 )
 	{
 		goto exit;
@@ -2203,42 +2203,43 @@ static ssize_t axis_map_show( struct device* dev, struct device_attribute* attr,
 		axis.sign.y ? "-" : "", 'x' + axis.axis.y,
 		axis.sign.z ? "-" : "", 'x' + axis.axis.z );
 	exit:
-	mutex_unlock(&data->lock);
+	mutex_unlock(&priv->lock);
 	return ( ssize_t ) ret;
 }
 
 static ssize_t axis_map_store( struct device* dev, struct device_attribute* attr, const char* buf, size_t count )
 {
-	struct bno055_priv *data = iio_priv(dev_to_iio_dev(dev));
+	struct bno055_priv *priv = iio_priv(dev_to_iio_dev(dev));
 	struct bno055_axis axis;
-
-	/*dev_info( dev, "%s: x=%s%c, y=%s%c, z=%s%c\n",
-		__func__,
-		data->axis.sign.x ? "-" : "", 'x' + data->axis.axis.x,
-		data->axis.sign.y ? "-" : "", 'x' + data->axis.axis.y,
-		data->axis.sign.z ? "-" : "", 'x' + data->axis.axis.z );*/
 	int ret;
-	mutex_lock(&data->lock);
+
+	dev_info( dev, "%s: x=%s%c, y=%s%c, z=%s%c\n",
+		__func__,
+		priv->axis.sign.x ? "-" : "", 'x' + priv->axis.axis.x,
+		priv->axis.sign.y ? "-" : "", 'x' + priv->axis.axis.y,
+		priv->axis.sign.z ? "-" : "", 'x' + priv->axis.axis.z );
 	ret = bno055_parse_axis_map( buf, &axis );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to parse axis definition\n" );
-		goto exit;
+		return ret;
 	}
-	data->axis = axis;
-	ret = bno055_operation_mode_do_set(data, BNO055_OPR_MODE_CONFIG);
+	priv->axis = axis;
+	/*
+	mutex_lock(&priv->lock);
+	ret = bno055_operation_mode_do_set(priv, BNO055_OPR_MODE_CONFIG);
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set configuration mode\n" );
 		goto exit;
 	}
-	ret = bno055_set_axis_map( data );
+	ret = bno055_set_axis_map( priv );
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set axis map\n" );
 		goto exit;
 	}
-	ret = bno055_operation_mode_do_set(data, data->operation_mode);
+	ret = bno055_operation_mode_do_set(priv, priv->operation_mode);
 	if ( ret < 0 )
 	{
 		dev_err( dev, "failed to set operating mode\n" );
@@ -2246,8 +2247,15 @@ static ssize_t axis_map_store( struct device* dev, struct device_attribute* attr
 	}
 	ret = count;
 	exit:
-	mutex_unlock(&data->lock);
-	return ret;
+	mutex_unlock(&priv->lock);
+	*/
+	ret = bno055_init( priv, NULL, 0 );
+	if ( ret < 0 )
+	{
+		dev_err( dev, "failed init\n" );
+		return ret;
+	}
+	return count;
 }
 
 MODULE_AUTHOR("Andrea Merello <andrea.merello@iit.it>");
