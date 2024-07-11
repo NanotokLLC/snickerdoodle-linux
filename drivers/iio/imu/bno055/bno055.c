@@ -2225,30 +2225,6 @@ static ssize_t axis_map_store( struct device* dev, struct device_attribute* attr
 		return ret;
 	}
 	priv->axis = axis;
-	/*
-	mutex_lock(&priv->lock);
-	ret = bno055_operation_mode_do_set(priv, BNO055_OPR_MODE_CONFIG);
-	if ( ret < 0 )
-	{
-		dev_err( dev, "failed to set configuration mode\n" );
-		goto exit;
-	}
-	ret = bno055_set_axis_map( priv );
-	if ( ret < 0 )
-	{
-		dev_err( dev, "failed to set axis map\n" );
-		goto exit;
-	}
-	ret = bno055_operation_mode_do_set(priv, priv->operation_mode);
-	if ( ret < 0 )
-	{
-		dev_err( dev, "failed to set operating mode\n" );
-		goto exit;
-	}
-	ret = count;
-	exit:
-	mutex_unlock(&priv->lock);
-	*/
 	ret = bno055_init( priv, NULL, 0 );
 	if ( ret < 0 )
 	{
