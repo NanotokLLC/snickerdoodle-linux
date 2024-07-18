@@ -16,14 +16,14 @@ function get_num_cpus()
 
 function build_kernel()
 {
-	local num_jobs=${1:4}
+	local num_jobs=${1:-4}
 	printf "%s: building uImage\n" $MY_NAME
 	$do make -j${num_jobs} ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- LOADADDR=0x8000 uImage
 }
 
 function build_modules()
 {
-	local num_jobs=${1:4}
+	local num_jobs=${1:-4}
 	printf "%s: building modules\n" $MY_NAME
 	$do make -j${num_jobs} ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- modules
 }
@@ -46,9 +46,9 @@ function create_temp_dir()
 function copy_to_temp_dir()
 {
 	local path=${1:?}
-	local num_jobs=${2:4}
+	local num_jobs=${2:-4}
 	printf "%s: gathering files\n" $MY_NAME
-	$do sudo make -j${num_jobs} ARCH=arm INSTALL_MOD_PATH=$path modules_install > /dev/null
+	$do sudo make -j${num_jobs} ARCH=arm INSTALL_MOD_PATH=$path modules_install
 	$do sudo cp arch/arm/boot/uImage $path
 }
 
