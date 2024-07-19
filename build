@@ -3,11 +3,22 @@ MY_NAME=$(basename $0)
 cd $(dirname $0)
 MY_DIR=$PWD
 cd - > /dev/null
+
 VERSION=1.1
 
 set -o nounset
 
 source ~/.bash_functions
+
+function show_usage()
+{
+	printf "usage: %s [options]\n" $MY_NAME
+	printf "options:\n"
+	printf "\t-h | --help - show this help message\n"
+	printf "\t-c | --copy <device path> - copy resulting tarball to snickerdoodle@<device path> (i.e. <host>:<path>)\n"
+	printf "\t-v | --version - show version and quit\n"
+	printf "\t-y | --dry-run - show commands to be executed, but do not execute them\n"
+}
 
 function get_num_cpus()
 {
@@ -86,31 +97,42 @@ function copy_to_device()
 	$do sshpass -p snickerdoodle scp $path/Linux*-nanotok-*.tar.gz snickerdoodle@${device}
 }
 
-copy=0
 do=
 
-while [[ "$1" =~ ^- && ! "$1" == "--" ]]
+dry_run=0
+device_path=
+while [[ $# -gt 0 && "$1" =~ ^- && ! "$1" == "--" ]]
 do
 	case $1 in
+		-h | --help )
+			show_usage
+			exit 1
+			;;
 		-v | --version )
 			echo "$VERSION"
 			exit
-		;;
+			;;
 		-c | --copy )
-			copy=1
-		;;
+			shift
+			device_path=${1:?device path required}
+			;;
 		-y | --dry-run )
+			dry_run=1
 			do=echo
-		;;
+			;;
+		* )
+			printf "%s: unknown option: \"%s\"\n" $MY_NAME $1 1>&2
+			show_usage
+			exit 1
+			;;
 	esac
 	shift
 done
-if [[ "$1" == '--' ]]
+
+if [[ $# -ne 0 && "$1" == '--' ]]
 then
 	shift
 fi
-
-device_path=${1:?device path required}
 
 num_cpus=$(get_num_cpus)
 build_kernel $num_cpus && build_modules $num_cpus
@@ -124,7 +146,7 @@ fi
 temp_path=$(get_temp_path)
 create_temp_dir $temp_path && copy_to_temp_dir $temp_path $num_cpus && validate_temp_dir $temp_path
 result=$?
-if [[ $result -ne 0 ]]
+if [[ $dry_run -eq 0 && $result -ne 0 ]]
 then
 	printf "%s: failed validation, aborting\n" $MY_NAME 1>&2
 	exit 1
@@ -132,7 +154,10 @@ fi
 
 create_tarball $temp_path
 result=$?
-if [[ $result -eq 0 && $copy -ne 0 ]]
+if [[ -n "$device_path" ]]
 then
-	copy_to_device $temp_path $device_path
+	if [[ $dry_run -ne 0 || $result -eq 0 ]]
+	then
+		copy_to_device $temp_path $device_path
+	fi
 fi
