@@ -1626,6 +1626,7 @@ static int bq25890_probe(struct i2c_client *client)
 				     "failed to allocate register map\n");
 
 #	if defined NTK_EXTENSIONS
+		ret = 0;	/* 2024.10.01:NEB: oops */
 		for (i = 0; i < ARRAY_SIZE(bq25890_reg_fields); i++) {
 			const struct ntk_reg_field *reg_fields = bq25890_reg_fields;
 
