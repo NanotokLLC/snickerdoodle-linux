@@ -231,6 +231,7 @@ static const struct regmap_config bq25890_regmap_config = {
 		DEFINE_FIELD( 0x03, 5, 5, OTG_CFG ),
 		DEFINE_FIELD( 0x03, 4, 4, CHG_CFG ),
 		DEFINE_FIELD( 0x03, 1, 3, SYSVMIN ),
+		DEFINE_FIELD( 0x03, 0, 0, MIN_VBAT_SEL ),
 		/* REG04 */
 		DEFINE_FIELD( 0x04, 7, 7, PUMPX_EN ),
 		DEFINE_FIELD( 0x04, 0, 6, ICHG ),
@@ -263,12 +264,14 @@ static const struct regmap_config bq25890_regmap_config = {
 		DEFINE_FIELD( 0x09, 0, 0, PUMPX_DN ),
 		/* REG0A */
 		DEFINE_FIELD( 0x0A, 4, 7, BOOSTV ),
+		DEFINE_FIELD( 0x0A, 3, 3, PFM_OTG_DIS ),
 		DEFINE_FIELD( 0x0A, 0, 2, BOOSTI ),
 		/* REG0B */
 		DEFINE_FIELD( 0x0B, 5, 7, VBUS_STAT ),
 		DEFINE_FIELD( 0x0B, 3, 4, CHG_STAT ),
 		DEFINE_FIELD( 0x0B, 2, 2, PG_STAT ),
 		DEFINE_FIELD( 0x0B, 1, 1, SDP_STAT ),
+		DEFINE_FIELD( 0x0B, 1, 1, 0B_RSVD ),	/* redundant name for deprecated SDP_STAT register */
 		DEFINE_FIELD( 0x0B, 0, 0, VSYS_STAT ),
 		/* REG0C */
 		DEFINE_FIELD( 0x0C, 7, 7, WD_FAULT ),
@@ -1834,6 +1837,11 @@ unlock:
 		for ( index = F_EN_HIZ; index < F_MAX_FIELDS; ++index )
 		{
 			const char* name = bq25890_reg_fields[ index ].name;
+			if ( NULL == name )
+			{
+				printk( "WARNING: NULL name in bq25890_reg_fields\n" );
+				continue;
+			}
 			size_t name_length = strlen( name );
 			if ( name_length == field_name_length )
 			{
@@ -1950,6 +1958,11 @@ unlock:
 			goto exit;
 		}
 		preg_file = kmalloc( sizeof( struct reg_file ), GFP_KERNEL );
+		if ( preg_file == NULL )
+		{
+			ret = -ENOMEM;
+			goto exit;
+		}
 		preg_file->pfield = &bq25890_reg_fields[ index ];
 		preg_file->dyn_attr.attr.attr.name = preg_file->pfield->name;
 		preg_file->dyn_attr.attr.attr.mode = S_IWUSR | S_IRUGO;
